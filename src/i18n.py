@@ -377,6 +377,8 @@ T = [
     ("Un fork (enlace de GitHub)", "A fork (GitHub link)", "一个 fork（GitHub 链接）", "एक fork (GitHub लिंक)",
      "Un fork (lien GitHub)", "fork (رابط GitHub)"),
     ("Herramientas de compilación", "Build tools", "编译工具", "बिल्ड टूल", "Outils de compilation", "أدوات البناء"),
+    ("Código fuente (se actualiza con git)", "Source code (updated with git)", "源代码（用 git 更新）",
+     "सोर्स कोड (git से अपडेट होता है)", "Code source (mis à jour avec git)", "الشيفرة المصدرية (تُحدَّث بـ git)"),
 ]
 
 PATTERNS = [

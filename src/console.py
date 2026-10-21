@@ -1135,7 +1135,7 @@ class Console:
             elif kind == "app_update":
                 self.app_update = msg[1]
                 self.app_err = msg[2]
-                if msg[1] and msg[1]["update"]:
+                if msg[1] and msg[1]["update"] and paths.FROZEN:
                     self.toast = (f"AnyPS5 Console {msg[1]['remote']} disponible  ·  Menú > Actualizaciones", time.time() + 12)
             elif kind == "bglog":
                 if self.bg:
@@ -1505,7 +1505,7 @@ class Console:
             if getattr(self, "bg_last", None):
                 rows.append(("Ver registro de la última actualización", lambda: setattr(self, "state", "bglog")))
         a = self.app_update
-        if a and a.get("update"):
+        if a and a.get("update") and paths.FROZEN:
             rows.insert(0, (f"Actualizar AnyPS5 Console a {a['remote']}", lambda: self.start_busy(
                 "Actualizando AnyPS5 Console", self.task_update_app)))
         rows += [
@@ -2165,6 +2165,8 @@ class Console:
         if a:
             state = ("Actualización disponible", ACCENT) if a["update"] else ("Al día", GOOD)
             detail = f"local {paths.VERSION}  ·  disponible {a['remote']}"
+            if not paths.FROZEN:
+                state = ("Código fuente (se actualiza con git)", DIM)
         elif getattr(self, "app_err", ""):
             state, detail = ("Sin conexión", BAD), f"local {paths.VERSION}"
         else:
