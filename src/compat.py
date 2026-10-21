@@ -16,7 +16,7 @@ CLIENT_ID = "Ov23liTC0DFDVRDqDBsN"
 REPO = "Techx3/AnyPS5-Compat"
 PAGE = "https://techx3.github.io/AnyPS5-Compat/"
 # Relay (Cloudflare Worker) that files reports without a GitHub sign-in. Empty: sign-in required.
-RELAY = ""
+RELAY = "https://anyps5-compat.techx3.workers.dev"
 SCOPE = "public_repo"
 PLAYABLE_SECONDS = 600
 BOOT_SECONDS = 120
