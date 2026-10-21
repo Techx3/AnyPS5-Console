@@ -45,6 +45,8 @@ The installed version keeps its data in `%LOCALAPPDATA%\AnyPS5Console`.
 4. *Menú* > *Actualizaciones* > *Instalar la versión estable* (recomendado). Para compilar la versión Repositorio o un fork, instala antes las herramientas de compilación desde la misma pantalla.
 5. Elige un juego y pulsa A. La primera vez se convierte y se revisan sus funciones; luego abre en pantalla completa y vuelves a la consola al cerrarlo.
 6. Juegos de PC: Steam y Epic se detectan solos; tus carpetas o `.exe` se añaden en *Ajustes* > *Juegos PC*. Pulsa abajo en el inicio para ver esa fila.
+7. Durante el juego, el botón Guide abre el menú rápido (volver al juego o cerrarlo). Las conversiones se cancelan con B.
+8. La consola se actualiza sola desde *Menú* > *Actualizaciones* cuando hay una versión nueva.
 
 ## Features
 
@@ -54,6 +56,11 @@ The installed version keeps its data in `%LOCALAPPDATA%\AnyPS5Console`.
 - Check of the system functions a game needs before it starts (`tools/import_audit.py` from AnyPS5).
 - Fullscreen games with aspect ratio kept, ultrawide included.
 - Languages: English, 中文, हिन्दी, Español, Français, العربية. The game language follows the console language or can be set separately.
+- Self-update: the console checks its own releases and updates itself (installer or portable) from *Menu* > *Updates*.
+- Conversions and builds show a progress bar and can be cancelled with B.
+- Quick menu while playing (controller Guide button): return to the game or close it.
+- Per user: playtime, last played, favorites and an avatar picture (Y on the user). Search and sort (recent, A–Z, most played) from the menu.
+- Background music, can be turned off in *Settings*.
 
 ## Requirements
 
@@ -70,6 +77,7 @@ The installed version keeps its data in `%LOCALAPPDATA%\AnyPS5Console`.
 | Y | Tab | Options |
 | X | F5 | Reload games |
 | Start / Back | M | Menu |
+| Guide (in game) | | Quick menu |
 | D-pad / stick | Arrows | Move |
 | | F11 | Toggle fullscreen |
 
