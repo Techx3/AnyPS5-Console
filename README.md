@@ -93,7 +93,7 @@ Paths and user names are removed from the log before sending.
 
 *Options* (Y) on a game:
 
-- **Game profile**: AnyPS5 version used for that game, `APS5_*` environment variables (for example `APS5_FULLSCREEN=0`) and extra relinker arguments. Only that game is affected; changing the arguments reconverts it next time.
+- **Game profile**: AnyPS5 version used for that game, `ANYPS5_*` / `APS5_*` environment variables (for example `ANYPS5_FULLSCREEN=0`) and extra relinker arguments. Only that game is affected; changing the arguments reconverts it next time.
 - **Trophies**: the trophies AnyPS5 records for the current user, with icons, grade and unlock date (from the game's `sce_sys/trophy2` package).
 - **View in the compatibility list**, **PRs that would help it**, **System functions**.
 

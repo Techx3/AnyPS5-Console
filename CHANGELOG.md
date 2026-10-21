@@ -24,6 +24,7 @@ Release notes for AnyPS5 Console. The section of each version is the description
 
 **Other**
 - Games go fullscreen with AnyPS5's own F11 toggle, so official AnyPS5 builds work without patches (borderless window as fallback).
+- Sets `ANYPS5_FULLSCREEN` and `ANYPS5_USER_NAME` (proposed to AnyPS5) so games open fullscreen directly and show the console user's name.
 - Experimental Linux / Steam Deck AppImage (builds AnyPS5 main or forks locally).
 - Settings and lists no longer draw over the top bar when scrolled.
 

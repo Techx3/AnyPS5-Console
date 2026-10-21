@@ -806,16 +806,19 @@ class Console:
                 userlib.bind_dir(exe.parent, "_trophy", self.users.trophy_dir(self.user["id"], game.key), self.log)
             except Exception as e:
                 self.log(f"Trofeos: {e}")
-            os.environ["APS5_USER_NAME"] = self.user["name"]
+            # ANYPS5_USER_NAME: upstream AnyPS5 (16 bytes max); APS5_USER_NAME: older local builds
+            name = self.user["name"].encode("utf-8")[:16].decode("utf-8", "ignore")
+            os.environ["ANYPS5_USER_NAME"] = os.environ["APS5_USER_NAME"] = name
         os.environ["ANYPS5_LANGUAGE"] = str(self.game_language())
         if self.conf.get("game_fullscreen", True):
-            os.environ["APS5_FULLSCREEN"] = "1"
+            os.environ["ANYPS5_FULLSCREEN"] = os.environ["APS5_FULLSCREEN"] = "1"
         else:
+            os.environ.pop("ANYPS5_FULLSCREEN", None)
             os.environ.pop("APS5_FULLSCREEN", None)
         saved_env = {k: os.environ.get(k) for k in prof.get("env", {})}
         os.environ.update(prof.get("env", {}))
         self.q.put(("launch",))
-        if os.environ.get("APS5_FULLSCREEN", "0") not in ("", "0"):
+        if os.environ.get("ANYPS5_FULLSCREEN", "0") not in ("", "0") or os.environ.get("APS5_FULLSCREEN", "0") not in ("", "0"):
             threading.Thread(target=winfs.fullscreen_when_ready, args=(str(exe.resolve()), getattr(self, "hwnd", None)),
                              daemon=True).start()
         self.game_exe = str(exe.resolve())
@@ -1458,7 +1461,7 @@ class Console:
         items = [(f"{k}={v}  ·  quitar", lambda k=k: self.remove_profile_env(g, k)) for k, v in sorted(env.items())]
         items.append(("Añadir variable…", lambda: self.text_entry(
             self.tr("Variable para este juego"), "APS5_", lambda t: self.add_profile_env(g, t),
-            "NOMBRE=valor, por ejemplo APS5_FULLSCREEN=0")))
+            "NOMBRE=valor, por ejemplo ANYPS5_FULLSCREEN=0")))
         items.append(("Volver", lambda: self.profile_menu(g)))
         self.open_menu(self.tr("Variables APS5"), items)
 
