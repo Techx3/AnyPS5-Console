@@ -82,12 +82,24 @@ class Console:
     def __init__(self):
         os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
         os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
+        # Smooth (bilinear) scaling of the 1080p canvas to the screen instead of nearest pixel.
+        os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")
+        # Real pixels on Windows display scaling (125%, 150%...): no blurry bitmap stretch by Windows.
+        os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
         if os.name == "nt":
             try:
                 import ctypes
                 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LarimarStudios.AnyPS5Console")
             except Exception:
                 pass
+            try:
+                import ctypes
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:
+                try:
+                    ctypes.windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
         pygame.init()
         try:
             self.logo = pygame.image.load(str(ASSETS / "anyps5_icon_512.png"))
@@ -2458,7 +2470,7 @@ class Console:
         else:
             k = min(ww / W, wh / H)
             size = (max(1, int(W * k)), max(1, int(H * k)))
-            frame = pygame.transform.smoothscale(self.screen, size) if k < 1 else pygame.transform.scale(self.screen, size)
+            frame = pygame.transform.smoothscale(self.screen, size)
             win.blit(frame, ((ww - frame.get_width()) // 2, (wh - frame.get_height()) // 2))
         pygame.display.flip()
 
