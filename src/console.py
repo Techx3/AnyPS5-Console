@@ -21,6 +21,7 @@ import audit  # noqa: E402
 import winfs  # noqa: E402
 import i18n  # noqa: E402
 import procs  # noqa: E402
+import compat  # noqa: E402
 
 procs.install()
 import ambient as amb  # noqa: E402
@@ -56,7 +57,7 @@ paths.setup_environment()
 
 def load_conf():
     conf = {"channel": "repo", "games_dir": "", "fullscreen": True, "check_updates": True, "game_fullscreen": True,
-            "lang": "en", "game_lang": "auto", "music": True, "sort": "recent"}
+            "lang": "en", "game_lang": "auto", "music": True, "sort": "recent", "compat": False}
     try:
         conf.update(json.loads(CONF_PATH.read_text("utf-8")))
     except (OSError, ValueError):
@@ -150,6 +151,10 @@ class Console:
         self.game_exe = None
         self.music_on = False
         self.app_update = None
+        self.compat_store = compat.Store(paths.DATA)
+        self.device_code = None
+        if self.conf.get("compat"):
+            threading.Thread(target=self.flush_reports, daemon=True).start()
         self.worker(self.task_scan)
         self.worker(self.task_scan_pc)
         self.worker(self.task_prepare_music)
@@ -559,12 +564,22 @@ class Console:
         rel = core.find_relinker(cfg)
         if rel and audit.supports_registry(rel):
             cfg["extra_args"] = (cfg.get("extra_args", "") + " --registry").strip()
-        exe = core.ensure_converted(game, cfg, self.log, force=force)
+        try:
+            exe = core.ensure_converted(game, cfg, self.log, force=force)
+        except procs.Cancelled:
+            raise
+        except Exception as e:
+            if not procs.cancel_event.is_set():
+                self.report(game, channel, converted=False, error=str(e))
+            raise
+        result = None
         if not skip_audit:
             result = self.run_audit(game, cfg, exe.parent, channel)
             if result and (result["absent"] or result["missing_libs"]):
                 self.q.put(("show_audit", game.key, result, True))
                 return
+        else:
+            result = audit.load(exe.parent)
         if self.user:
             legacy = []
             if not any(userlib.has_files(self.users.save_dir(u["id"], game.key)) for u in self.users.items):
@@ -582,11 +597,124 @@ class Console:
             threading.Thread(target=winfs.fullscreen_when_ready, args=(str(exe.resolve()), getattr(self, "hwnd", None)),
                              daemon=True).start()
         self.game_exe = str(exe.resolve())
+        self.closed_by_user = False
         t0 = time.time()
+        seen = {}
+        done = threading.Event()
+
+        def watch():
+            while not done.is_set():
+                if winfs.has_window(self.game_exe or ""):
+                    seen["t"] = time.time() - t0
+                    return
+                done.wait(1.0)
+        if os.name == "nt":
+            threading.Thread(target=watch, daemon=True).start()
+        else:
+            seen["t"] = 0.0
         rc = core.launch(exe, self.log)
-        self.record_play(game, time.time() - t0)
+        done.set()
+        played = time.time() - t0
+        self.record_play(game, played)
         self.game_exe = None
+        self.report(game, channel, converted=True, window_after=seen.get("t"), seconds=played, exit_code=rc,
+                    audit_result=result, log_path=exe.parent / "last_run.log")
         self.q.put(("ended", rc, str(exe.parent / "last_run.log")))
+
+    def anyps5_version(self, channel=None):
+        channel = channel or self.conf["channel"]
+        try:
+            if channel == "release":
+                info = updater.release_current(REL_DIR)
+                return info["tag"] if info else "-"
+            root = self.channel_root(channel)
+            head = updater._git(root, "rev-parse", "--short=9", "HEAD", timeout=20).stdout.strip()
+            base = updater._git(root, "merge-base", "HEAD", "origin/main", check=False, timeout=20).stdout.strip()
+            ahead = updater._git(root, "rev-list", "--count", "origin/main..HEAD", check=False, timeout=20).stdout.strip()
+            if ahead and ahead != "0" and base:
+                return f"{base[:9]} + {ahead} local ({head})"
+            return head
+        except Exception:
+            return "-"
+
+    def report(self, game, channel, *, converted, window_after=None, seconds=0, exit_code=None, audit_result=None,
+               log_path=None, error=""):
+        if not self.conf.get("compat"):
+            return
+        try:
+            ch = channel or self.conf["channel"]
+            words = [self.user["name"]] if self.user else []
+            words += [self.conf.get("games_dir", ""), str(paths.DATA)]
+            r = compat.build(game, converted=converted, window_after=window_after, seconds=seconds,
+                             exit_code=exit_code, closed_by_user=getattr(self, "closed_by_user", False),
+                             anyps5={"channel": ch if not ch.startswith("fork:") else "fork " + ch[5:],
+                                     "version": self.anyps5_version(ch)},
+                             console_version=paths.VERSION, audit_result=audit_result, log_path=log_path,
+                             error=error, private_words=words)
+            self.compat_store.queue(r)
+            threading.Thread(target=self.flush_reports, daemon=True).start()
+        except Exception as e:
+            self.log(f"Reporte de compatibilidad: {e}")
+
+    def flush_reports(self):
+        try:
+            n = compat.flush(self.compat_store, self.log)
+            if n:
+                self.q.put(("toast", f"Reporte de compatibilidad enviado ({n})"))
+        except Exception as e:
+            self.log(f"Reporte de compatibilidad: {e}")
+
+    def task_github_login(self):
+        start = compat.device_start()
+        self.q.put(("device_code", start["user_code"], start.get("verification_uri", "https://github.com/login/device")))
+        try:
+            import webbrowser
+            webbrowser.open(start.get("verification_uri", "https://github.com/login/device"))
+        except Exception:
+            pass
+        token = compat.device_poll(start, procs.cancel_event.is_set)
+        login = compat.whoami(token)
+        self.compat_store.set_auth(token, login)
+        self.conf["compat"] = True
+        save_conf(self.conf)
+        self.q.put(("device_code", None, None))
+        self.q.put(("done", f"Sesión iniciada como {login}"))
+        self.flush_reports()
+
+    def compat_menu(self):
+        st = self.compat_store
+        on = self.conf.get("compat")
+        items = []
+        if on:
+            items.append(("Desactivar reportes", lambda: self.set_compat(False)))
+        else:
+            items.append(("Activar reportes", lambda: self.set_compat(True)))
+        if st.token():
+            items.append((f"Cerrar sesión de GitHub ({st.login_name()})", self.compat_logout))
+        else:
+            items.append(("Iniciar sesión con GitHub", lambda: self.start_busy("Iniciar sesión con GitHub",
+                                                                               self.task_github_login)))
+        items += [("Ver lista de compatibilidad", lambda: self.open_url(compat.PAGE)), ("Cerrar", None)]
+        self.open_menu(self.tr("Reportes de compatibilidad"), items)
+
+    def set_compat(self, on):
+        self.conf["compat"] = on
+        save_conf(self.conf)
+        if on and not self.compat_store.token():
+            self.start_busy("Iniciar sesión con GitHub", self.task_github_login)
+        elif on:
+            threading.Thread(target=self.flush_reports, daemon=True).start()
+
+    def compat_logout(self):
+        self.compat_store.logout()
+        self.toast = ("Sesión de GitHub cerrada", time.time() + 4)
+
+    def open_url(self, url):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     def task_update_repo(self):
         self.require_tools()
@@ -675,6 +803,10 @@ class Console:
                 m = re.search(r"\[(\d+)/(\d+)\]", msg[1]) or re.search(r"(\d{1,3})%", msg[1])
                 if m:
                     self.progress = int(m[1]) / int(m[2]) if m.lastindex == 2 else int(m[1]) / 100
+            elif kind == "device_code":
+                self.device_code = (msg[1], msg[2]) if msg[1] else None
+            elif kind == "toast":
+                self.toast = (msg[1], time.time() + 5)
             elif kind == "music_ready":
                 self.music_path = msg[1]
             elif kind == "app_update":
@@ -712,9 +844,11 @@ class Console:
                 if msg[2]:
                     self.worker(self.task_scan)
             elif kind == "done":
+                self.device_code = None
                 self.toast = (msg[1], time.time() + 8)
                 self.state = "home"
             elif kind == "error":
+                self.device_code = None
                 self.restore()
                 if self.cancelling:
                     self.cancelling = False
@@ -785,6 +919,7 @@ class Console:
         items.append((f"Ordenar: {sort_names.get(self.conf.get('sort', 'recent'), 'Recientes')}", self.cycle_sort))
         items += [
             ("Cambiar de usuario", lambda: self.go("users")),
+            ("Lista de compatibilidad", lambda: self.open_url(compat.PAGE)),
             ("Actualizaciones", lambda: setattr(self, "state", "updates")),
             ("Ajustes", lambda: setattr(self, "state", "settings")),
             ("Recargar juegos", self.rescan),
@@ -905,8 +1040,15 @@ class Console:
             ("Juegos en pantalla completa", "Sí" if c.get("game_fullscreen", True) else "No", "game_fullscreen"),
             ("Buscar actualizaciones al iniciar", "Sí" if c["check_updates"] else "No", "check_updates"),
             ("Música de fondo", "Sí" if c.get("music", True) else "No", "music"),
+            ("Reportes de compatibilidad", self.compat_label(), "compat"),
             ("Volver", "", "back"),
         ]
+
+    def compat_label(self):
+        if not self.conf.get("compat"):
+            return "No"
+        login = self.compat_store.login_name()
+        return f"{self.tr('Sí')} · {login}" if login else self.tr("Sí (sin sesión)")
 
     def set_lang(self, code):
         self.conf["lang"] = code
@@ -966,6 +1108,11 @@ class Console:
             c["check_updates"] = not c["check_updates"]
         elif key == "game_fullscreen":
             c["game_fullscreen"] = not c.get("game_fullscreen", True)
+        elif key == "compat":
+            if step == 0:
+                self.compat_menu()
+            else:
+                self.set_compat(not c.get("compat"))
         elif key == "music":
             c["music"] = not c.get("music", True)
             self.set_music(True)
@@ -1665,6 +1812,13 @@ class Console:
             part = pygame.Rect(max(bar.x, x), bar.y, min(seg, bar.right - max(bar.x, x)), bar.height)
             if part.width > 0:
                 pygame.draw.rect(self.screen, ACCENT, part, border_radius=5)
+        if self.device_code:
+            code, url = self.device_code
+            self.text("Abre esta dirección e introduce el código:", 28, DIM, (W // 2, 360), anchor="center")
+            self.text(url, 30, ACCENT, (W // 2, 410), anchor="center")
+            self.text(code, 96, TEXT, (W // 2, 520), bold=True, anchor="center")
+            self.draw_hints([("B", "Cancelando…" if self.cancelling else "Cancelar")])
+            return
         y = 300
         for line in self.log_lines[-19:]:
             self.text(line, 24, DIM, (124, y), maxw=W - 250)

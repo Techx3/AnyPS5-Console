@@ -61,6 +61,7 @@ The installed version keeps its data in `%LOCALAPPDATA%\AnyPS5Console`.
 - Quick menu while playing (controller Guide button): return to the game or close it.
 - Per user: playtime, last played, favorites and an avatar picture (Y on the user). Search and sort (recent, A–Z, most played) from the menu.
 - Background music, can be turned off in *Settings*.
+- Compatibility reports (opt-in): *Settings* > *Compatibility reports* > sign in with GitHub once. Each game session sends its result to the [compatibility list](https://techx3.github.io/AnyPS5-Compat/) (status, AnyPS5 version, missing functions and the end of the log, without paths or user names).
 
 ## Requirements
 
