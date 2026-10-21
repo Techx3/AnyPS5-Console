@@ -85,17 +85,47 @@ if os.name == "nt":
         user32.SetForegroundWindow(hwnd)
         return True
 
+    def _covers_monitor(hwnd, ref_hwnd):
+        rect = _monitor_rect(ref_hwnd or hwnd)
+        cur = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(cur))
+        return rect is not None and (cur.left, cur.top, cur.right - cur.left, cur.bottom - cur.top) == rect
+
+    VK_F11, SCAN_F11, KEYEVENTF_KEYUP = 0x7A, 0x57, 0x0002
+
+    def _press_f11(hwnd):
+        """AnyPS5 toggles fullscreen (SDL fullscreen desktop) with F11 when its window has the keyboard focus."""
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.25)
+        if user32.GetForegroundWindow() != hwnd:
+            return False
+        user32.keybd_event(VK_F11, SCAN_F11, 0, 0)
+        time.sleep(0.05)
+        user32.keybd_event(VK_F11, SCAN_F11, KEYEVENTF_KEYUP, 0)
+        return True
+
     def fullscreen_when_ready(exe_path, ref_hwnd, timeout=90, stop=lambda: False):
+        """Make the game fullscreen without changing AnyPS5: its own F11 toggle first, borderless window as fallback."""
         end = time.time() + timeout
         while time.time() < end and not stop():
             wins = _windows_of(exe_path)
             if wins:
-                time.sleep(0.4)
-                for hwnd in wins:
-                    make_borderless(hwnd, ref_hwnd)
+                time.sleep(1.0)  # let the game finish creating its window and swapchain
+                for hwnd in _windows_of(exe_path) or wins:
+                    if _covers_monitor(hwnd, ref_hwnd):
+                        continue  # already fullscreen
+                    for _ in range(2):
+                        if _press_f11(hwnd):
+                            time.sleep(1.2)
+                            if _covers_monitor(hwnd, ref_hwnd):
+                                break
+                    else:
+                        make_borderless(hwnd, ref_hwnd)
                 return True
             time.sleep(0.5)
         return False
+
     def focus(exe_path):
         for hwnd in _windows_of(exe_path):
             user32.ShowWindow(hwnd, 9)

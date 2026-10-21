@@ -23,6 +23,7 @@ Release notes for AnyPS5 Console. The section of each version is the description
 - Animated game backgrounds with a crossfade between games. Both can be turned off in *Settings*.
 
 **Other**
+- Games go fullscreen with AnyPS5's own F11 toggle, so official AnyPS5 builds work without patches (borderless window as fallback).
 - Experimental Linux / Steam Deck AppImage (builds AnyPS5 main or forks locally).
 - Settings and lists no longer draw over the top bar when scrolled.
 
