@@ -96,6 +96,21 @@ if os.name == "nt":
                 return True
             time.sleep(0.5)
         return False
+    def focus(exe_path):
+        for hwnd in _windows_of(exe_path):
+            user32.ShowWindow(hwnd, 9)
+            user32.SetForegroundWindow(hwnd)
+            return True
+        return False
+
+    def has_window(exe_path):
+        return bool(_windows_of(exe_path))
 else:
+    def focus(exe_path):
+        return False
+
+    def has_window(exe_path):
+        return False
+
     def fullscreen_when_ready(exe_path, ref_hwnd, timeout=90, stop=lambda: False):
         return False

@@ -32,6 +32,9 @@ jobs:
         run: |
           $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
           "value=$v" >> $env:GITHUB_OUTPUT
+          if ("${{ github.ref_type }}" -eq "tag") {
+            (Get-Content src/paths.py) -replace '^VERSION = ".*"', "VERSION = `"$v`"" | Set-Content src/paths.py
+          }
 
       - name: Build executable
         run: >

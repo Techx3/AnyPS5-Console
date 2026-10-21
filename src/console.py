@@ -2,6 +2,7 @@ import json
 import math
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -19,6 +20,9 @@ import pcgames  # noqa: E402
 import audit  # noqa: E402
 import winfs  # noqa: E402
 import i18n  # noqa: E402
+import procs  # noqa: E402
+
+procs.install()
 import ambient as amb  # noqa: E402
 from ambient import Ambient, BlueBloom  # noqa: E402
 
@@ -52,7 +56,7 @@ paths.setup_environment()
 
 def load_conf():
     conf = {"channel": "repo", "games_dir": "", "fullscreen": True, "check_updates": True, "game_fullscreen": True,
-            "lang": "en", "game_lang": "auto"}
+            "lang": "en", "game_lang": "auto", "music": True, "sort": "recent"}
     try:
         conf.update(json.loads(CONF_PATH.read_text("utf-8")))
     except (OSError, ValueError):
@@ -73,6 +77,7 @@ def save_conf(conf):
 class Console:
     def __init__(self):
         os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
+        os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
         if os.name == "nt":
             try:
                 import ctypes
@@ -138,8 +143,16 @@ class Console:
         self.pc_scroll = 0.0
         self.row_i = 0
         self.vscroll = 0.0
+        self.stats = {}
+        self.filter_text = ""
+        self.progress = None
+        self.cancelling = False
+        self.game_exe = None
+        self.music_on = False
+        self.app_update = None
         self.worker(self.task_scan)
         self.worker(self.task_scan_pc)
+        self.worker(self.task_prepare_music)
         if self.conf["check_updates"]:
             self.worker(self.task_check_updates)
 
@@ -390,12 +403,86 @@ class Console:
             if cfg:
                 self.q.put(("audit", g.key, audit.load(Path(cfg["cache_dir"]) / g.key)))
 
+    def task_prepare_music(self):
+        try:
+            path = synth.ensure_music(HERE / "sounds")
+            self.q.put(("music_ready", str(path)))
+        except Exception:
+            pass
+
+    def set_music(self, on):
+        want = bool(on and self.conf.get("music", True) and getattr(self, "music_path", None))
+        if want == self.music_on:
+            return
+        try:
+            if want:
+                pygame.mixer.music.load(self.music_path)
+                pygame.mixer.music.set_volume(0.22)
+                pygame.mixer.music.play(-1, fade_ms=2500)
+            else:
+                pygame.mixer.music.fadeout(800)
+            self.music_on = want
+        except Exception:
+            self.music_on = False
+
+    def load_user_stats(self):
+        self.stats = userlib.load_stats(self.users.base, self.user["id"]) if self.user else {}
+
+    def record_play(self, game, seconds):
+        if not self.user:
+            return
+        st = self.stats.setdefault(game.key, {})
+        st["time"] = st.get("time", 0) + max(0, int(seconds))
+        st["last"] = int(time.time())
+        st["count"] = st.get("count", 0) + 1
+        userlib.save_stats(self.users.base, self.user["id"], self.stats)
+
+    def toggle_fav(self, game):
+        st = self.stats.setdefault(game.key, {})
+        st["fav"] = not st.get("fav", False)
+        if self.user:
+            userlib.save_stats(self.users.base, self.user["id"], self.stats)
+
+    def view(self, games):
+        if self.filter_text:
+            f = self.filter_text.lower()
+            games = [g for g in games if f in g.name.lower() or f in (g.title_id or "").lower()]
+        mode = self.conf.get("sort", "recent")
+        st = self.stats
+        if mode == "az":
+            key = lambda g: g.name.lower()
+        elif mode == "played":
+            key = lambda g: (-st.get(g.key, {}).get("time", 0), g.name.lower())
+        else:
+            key = lambda g: (-st.get(g.key, {}).get("last", 0), g.name.lower())
+        return sorted(games, key=lambda g: (not st.get(g.key, {}).get("fav", False), key(g)))
+
+    def view_ps5(self):
+        return self.view(self.games)
+
+    def view_pc(self):
+        return self.view(self.pc_games)
+
+    def task_check_app(self):
+        try:
+            self.q.put(("app_update", updater.app_check(paths.APP_REPO, paths.VERSION), ""))
+        except Exception as e:
+            self.q.put(("app_update", None, str(e)))
+
+    def task_update_app(self):
+        if not paths.FROZEN:
+            raise RuntimeError("Ejecutando desde el código fuente: actualiza con git pull.")
+        check = updater.app_check(paths.APP_REPO, paths.VERSION)
+        updater.app_update(check, HERE, paths.EXE_DIR, paths.PORTABLE, self.log)
+        self.q.put(("quit",))
+
     def task_scan_pc(self):
         hidden = set(self.conf.get("pc_hidden", []))
         games = [g for g in pcgames.scan_all(self.conf, HERE / "pc_icons256") if g.key not in hidden]
         self.q.put(("pc_games", games))
 
     def task_check_updates(self):
+        self.task_check_app()
         checks = [("repo", lambda: updater.repo_check(self.anyps5_root())), ("release", lambda: updater.release_check(REL_DIR))]
         for f in list(self.forks()):
             checks.append(("fork:" + f["name"], lambda f=f: updater.fork_check(self.fork_dir(f["name"]), f)))
@@ -443,7 +530,9 @@ class Console:
         except OSError as e:
             self.q.put(("error", f"No se pudo abrir {game.name}: {e}"))
             return
+        t0 = time.time()
         proc.wait()
+        self.record_play(game, time.time() - t0)
         self.q.put(("ended", 0, ""))
 
     def run_audit(self, game, cfg, out, channel=None):
@@ -492,7 +581,11 @@ class Console:
         if self.conf.get("game_fullscreen", True):
             threading.Thread(target=winfs.fullscreen_when_ready, args=(str(exe.resolve()), getattr(self, "hwnd", None)),
                              daemon=True).start()
+        self.game_exe = str(exe.resolve())
+        t0 = time.time()
         rc = core.launch(exe, self.log)
+        self.record_play(game, time.time() - t0)
+        self.game_exe = None
         self.q.put(("ended", rc, str(exe.parent / "last_run.log")))
 
     def task_update_repo(self):
@@ -514,8 +607,29 @@ class Console:
     def start_busy(self, title, fn, *args):
         self.busy_title = title
         self.log_lines = []
+        self.progress = None
+        self.cancelling = False
+        procs.cancel_event.clear()
         self.state = "busy"
         self.worker(fn, *args)
+
+    def cancel_busy(self):
+        if self.cancelling:
+            return
+        self.cancelling = True
+        procs.cancel_event.set()
+        threading.Thread(target=procs.kill_all, daemon=True).start()
+
+    def close_game(self):
+        self.closed_by_user = True
+        threading.Thread(target=procs.kill_all, daemon=True).start()
+
+    def quick_menu(self):
+        self.restore()
+        self.open_menu(self.tr("Juego en curso"), [
+            ("Volver al juego", lambda: winfs.focus(self.game_exe) if self.game_exe else None),
+            ("Cerrar el juego", self.close_game),
+        ])
 
     def window_handle(self):
         try:
@@ -558,6 +672,18 @@ class Console:
             elif kind == "log":
                 self.log_lines.append(msg[1])
                 self.log_lines = self.log_lines[-200:]
+                m = re.search(r"\[(\d+)/(\d+)\]", msg[1]) or re.search(r"(\d{1,3})%", msg[1])
+                if m:
+                    self.progress = int(m[1]) / int(m[2]) if m.lastindex == 2 else int(m[1]) / 100
+            elif kind == "music_ready":
+                self.music_path = msg[1]
+            elif kind == "app_update":
+                self.app_update = msg[1]
+                self.app_err = msg[2]
+                if msg[1] and msg[1]["update"]:
+                    self.toast = (f"AnyPS5 Console {msg[1]['remote']} disponible  ·  Menú > Actualizaciones", time.time() + 12)
+            elif kind == "quit":
+                self.running = False
             elif kind == "update":
                 self.updates[msg[1]] = msg[2]
                 self.update_err[msg[1]] = msg[3]
@@ -574,7 +700,11 @@ class Console:
                     self.minimize()
             elif kind == "ended":
                 self.restore()
-                if msg[1] != 0 and msg[2]:
+                self.menu = None
+                if getattr(self, "closed_by_user", False):
+                    self.closed_by_user = False
+                    self.state = "home"
+                elif msg[1] != 0 and msg[2]:
                     self.error = (f"El juego terminó con codigo {msg[1]}", self.log_lines[-14:], msg[2])
                     self.state = "error"
                 else:
@@ -586,14 +716,19 @@ class Console:
                 self.state = "home"
             elif kind == "error":
                 self.restore()
-                self.error = ("Error", [msg[1]] + self.log_lines[-10:], "")
-                self.state = "error"
+                if self.cancelling:
+                    self.cancelling = False
+                    self.toast = ("Cancelado", time.time() + 4)
+                    self.state = "home"
+                else:
+                    self.error = ("Error", [msg[1]] + self.log_lines[-10:], "")
+                    self.state = "error"
 
     def open_menu(self, title, items):
         self.menu = {"title": title, "items": items, "i": 0}
 
     def cur_list(self):
-        return self.pc_games if self.row_i == 1 else self.games
+        return self.view_pc() if self.row_i == 1 else self.view_ps5()
 
     def cur_game(self):
         lst = self.cur_list()
@@ -604,13 +739,15 @@ class Console:
         g = self.cur_game()
         if g is None:
             return
+        fav = ("Quitar de favoritos" if self.stats.get(g.key, {}).get("fav") else "Añadir a favoritos",
+               lambda: self.toggle_fav(g))
         if getattr(g, "platform", "PS5") == "PC":
-            items = [("Jugar", lambda: self.play(g)), ("Abrir carpeta del juego", lambda: self.open_folder(g.path))]
+            items = [("Jugar", lambda: self.play(g)), fav, ("Abrir carpeta del juego", lambda: self.open_folder(g.path))]
             items.append(("Ocultar de la lista", lambda: self.hide_pc(g)))
             items.append(("Cerrar", None))
             self.open_menu(g.name, items)
             return
-        items = [("Jugar", lambda: self.play(g)), ("Reconvertir y jugar", lambda: self.play(g, True))]
+        items = [("Jugar", lambda: self.play(g)), fav, ("Reconvertir y jugar", lambda: self.play(g, True))]
         for ch in self.ready_channels():
             if ch != self.conf["channel"]:
                 items.append((f"Jugar con {self.channel_name(ch)}", lambda ch=ch: self.play(g, channel=ch)))
@@ -641,6 +778,11 @@ class Console:
         items = []
         if nxt != self.conf["channel"]:
             items.append((f"Usar {self.channel_name(nxt)}", lambda: self.set_channel(nxt)))
+        sort_names = {"recent": "Recientes", "az": "A–Z", "played": "Más jugados"}
+        items.append(("Buscar juego", self.start_search))
+        if self.filter_text:
+            items.append(("Quitar búsqueda", self.clear_search))
+        items.append((f"Ordenar: {sort_names.get(self.conf.get('sort', 'recent'), 'Recientes')}", self.cycle_sort))
         items += [
             ("Cambiar de usuario", lambda: self.go("users")),
             ("Actualizaciones", lambda: setattr(self, "state", "updates")),
@@ -650,6 +792,21 @@ class Console:
             ("Cerrar", None),
         ]
         self.open_menu("Menú", items)
+
+    def cycle_sort(self):
+        order = ["recent", "az", "played"]
+        cur = self.conf.get("sort", "recent")
+        self.conf["sort"] = order[(order.index(cur) + 1) % len(order)] if cur in order else "recent"
+        save_conf(self.conf)
+        self.sel = self.pc_sel = 0
+
+    def start_search(self):
+        self.kb = {"name": self.filter_text, "r": 0, "c": 0, "mode": "search"}
+        self.go("newuser")
+
+    def clear_search(self):
+        self.filter_text = ""
+        self.sel = self.pc_sel = 0
 
     def rescan(self):
         self.worker(self.task_scan)
@@ -747,6 +904,7 @@ class Console:
             ("Pantalla completa (consola)", "Sí" if c["fullscreen"] else "No", "fullscreen"),
             ("Juegos en pantalla completa", "Sí" if c.get("game_fullscreen", True) else "No", "game_fullscreen"),
             ("Buscar actualizaciones al iniciar", "Sí" if c["check_updates"] else "No", "check_updates"),
+            ("Música de fondo", "Sí" if c.get("music", True) else "No", "music"),
             ("Volver", "", "back"),
         ]
 
@@ -808,6 +966,9 @@ class Console:
             c["check_updates"] = not c["check_updates"]
         elif key == "game_fullscreen":
             c["game_fullscreen"] = not c.get("game_fullscreen", True)
+        elif key == "music":
+            c["music"] = not c.get("music", True)
+            self.set_music(True)
         elif key == "back" and step == 0:
             self.state = "home"
         save_conf(c)
@@ -826,6 +987,10 @@ class Console:
         if not (st["git"] and st["mingw"]):
             rows.append(("Instalar herramientas de compilación (Git + MinGW)", lambda: self.start_busy(
                 "Instalando herramientas de compilación", self.task_install_tools)))
+        a = self.app_update
+        if a and a.get("update"):
+            rows.insert(0, (f"Actualizar AnyPS5 Console a {a['remote']}", lambda: self.start_busy(
+                "Actualizando AnyPS5 Console", self.task_update_app)))
         rows += [
             ("Añadir fork (enlace de GitHub)", self.start_fork_entry),
             ("Buscar de nuevo", lambda: self.worker(self.task_check_updates)),
@@ -905,13 +1070,17 @@ class Console:
                     self.go("newuser")
                 else:
                     self.user = self.users.items[self.usel]
+                    self.load_user_stats()
                     self.users.touch(self.user["id"])
                     self.ambient.boost = 0.6
                     self.go("home")
             elif action == "options" and self.usel < n - 1:
                 u = self.users.items[self.usel]
-                self.open_menu(u["name"], [("Eliminar usuario (los saves se conservan)",
-                                            lambda: self.delete_user(u["id"])), ("Cerrar", None)])
+                items = [("Elegir imagen…", lambda: self.pick_avatar(u))]
+                if u.get("avatar"):
+                    items.append(("Quitar imagen", lambda: self.set_avatar(u, None)))
+                items += [("Eliminar usuario (los saves se conservan)", lambda: self.delete_user(u["id"])), ("Cerrar", None)]
+                self.open_menu(u["name"], items)
             elif action == "back" and self.user:
                 self.go("home")
         elif st == "newuser":
@@ -984,6 +1153,36 @@ class Console:
             elif action == "options" and self.error and self.error[2]:
                 self.open_folder(Path(self.error[2]).parent)
 
+    def pick_avatar(self, u):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            f = filedialog.askopenfilename(title="Avatar", filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.webp"), ("*", "*.*")])
+            root.destroy()
+        except Exception:
+            f = ""
+        if f:
+            try:
+                img = pygame.image.load(f)
+                side = min(img.get_size())
+                img = img.subsurface(pygame.Rect((img.get_width() - side) // 2, (img.get_height() - side) // 2, side, side))
+                out = self.users.base / u["id"] / "avatar.png"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                pygame.image.save(pygame.transform.smoothscale(img, (256, 256)), str(out))
+                self.set_avatar(u, str(out))
+            except Exception as e:
+                self.toast = (str(e), time.time() + 5)
+
+    def set_avatar(self, u, path):
+        u["avatar"] = path
+        if path is None:
+            u.pop("avatar", None)
+        self.users.save()
+        self.images = {k: v for k, v in self.images.items() if k[0] != "avatar"}
+
     def delete_user(self, uid):
         self.users.remove(uid)
         if self.user and self.user["id"] == uid:
@@ -996,10 +1195,14 @@ class Console:
             if self.kb.get("upper"):
                 rows = [[k.upper() if len(k) == 1 else k for k in r] for r in rows]
             return rows, URL_ACTIONS, 200
-        return [list(r) for r in KEYBOARD], KEY_ACTIONS, 16
+        return [list(r) for r in KEYBOARD], KEY_ACTIONS, 30 if self.kb.get("mode") == "search" else 16
 
     def kb_finish(self):
-        if self.kb.get("mode") == "url":
+        if self.kb.get("mode") == "search":
+            self.filter_text = self.kb["name"].strip()
+            self.sel = self.pc_sel = 0
+            self.go("home")
+        elif self.kb.get("mode") == "url":
             self.finish_fork()
         else:
             self.finish_user()
@@ -1043,7 +1246,7 @@ class Console:
         elif action == "paste":
             self.paste()
         elif action == "back":
-            self.go("updates" if kb.get("mode") == "url" else "users")
+            self.go({"url": "updates", "search": "home"}.get(kb.get("mode"), "users"))
         elif action == "ok":
             if kb["r"] < len(layout):
                 key = layout[kb["r"]][min(kb["c"], 9)]
@@ -1105,7 +1308,10 @@ class Console:
             elif e.type == pygame.KEYDOWN:
                 if e.key == pygame.K_F11:
                     self.settings_action("fullscreen", 1)
-                elif e.key in keys and self.state not in ("busy", "playing"):
+                elif e.key in keys and self.state == "busy":
+                    if keys[e.key] == "back":
+                        self.cancel_busy()
+                elif e.key in keys and (self.state != "playing" or self.menu):
                     self.handle(keys[e.key])
             elif e.type == pygame.CONTROLLERDEVICEADDED:
                 from pygame._sdl2 import controller
@@ -1126,12 +1332,17 @@ class Console:
                 elif e.button in buttons:
                     self.keyboard_action(buttons[e.button])
             elif e.type == pygame.CONTROLLERBUTTONDOWN:
-                if e.button in buttons and self.state not in ("busy", "playing"):
+                if self.state == "playing" and e.button == pygame.CONTROLLER_BUTTON_GUIDE:
+                    self.quick_menu()
+                elif self.state == "busy":
+                    if e.button == pygame.CONTROLLER_BUTTON_B:
+                        self.cancel_busy()
+                elif e.button in buttons and (self.state != "playing" or self.menu):
                     self.handle(buttons[e.button])
         self.read_stick()
 
     def read_stick(self):
-        if self.state in ("busy", "playing") or not self.controllers:
+        if (self.state in ("busy", "playing") and not self.menu) or not self.controllers:
             return
         x = y = 0
         for c in self.controllers:
@@ -1186,7 +1397,32 @@ class Console:
             dim.fill((0, 0, 0, 70))
             self.screen.blit(dim, (0, 0))
 
+    def avatar_image(self, user, radius):
+        path = user.get("avatar") if user else None
+        if not path or not Path(path).is_file():
+            return None
+        key = ("avatar", path, radius, Path(path).stat().st_mtime)
+        if key not in self.images:
+            try:
+                src = pygame.image.load(path).convert_alpha()
+                side = min(src.get_size())
+                src = src.subsurface(pygame.Rect((src.get_width() - side) // 2, (src.get_height() - side) // 2, side, side))
+                img = pygame.transform.smoothscale(src, (radius * 2, radius * 2))
+                mask = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                pygame.draw.circle(mask, (255, 255, 255, 255), (radius, radius), radius)
+                img.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+                self.images[key] = img
+            except Exception:
+                self.images[key] = None
+        return self.images[key]
+
     def avatar(self, user, center, radius, ring=False):
+        img = self.avatar_image(user, radius)
+        if img is not None:
+            self.screen.blit(img, (center[0] - radius, center[1] - radius))
+            if ring:
+                pygame.draw.circle(self.screen, (255, 255, 255), center, radius + 10, 4)
+            return
         color = tuple(user["color"]) if user else (90, 100, 115)
         pygame.draw.circle(self.screen, color, center, radius)
         hi = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
@@ -1284,11 +1520,13 @@ class Console:
         game = self.cur_game()
         self.draw_background(game)
         self.draw_topbar()
-        self.sel = min(self.sel, max(0, len(self.games) - 1))
+        ps5, pc = self.view_ps5(), self.view_pc()
+        self.sel = min(self.sel, max(0, len(ps5) - 1))
+        self.pc_sel = min(self.pc_sel, max(0, len(pc) - 1))
         self.scroll += (self.sel * 230 - self.scroll) * 0.25
         self.pc_scroll += (self.pc_sel * 230 - self.pc_scroll) * 0.25
-        rows = [(self.games, self.sel, self.scroll, f"Juegos PS5  ·  {len(self.games)}"),
-                (self.pc_games, self.pc_sel, self.pc_scroll, f"Juegos PC  ·  {len(self.pc_games)}")]
+        rows = [(ps5, self.sel, self.scroll, f"Juegos PS5  ·  {len(ps5)}"),
+                (pc, self.pc_sel, self.pc_scroll, f"Juegos PC  ·  {len(pc)}")]
         act = rows[self.row_i]
         other = rows[1 - self.row_i]
         self.draw_row(act[0], act[1], act[2], 180, 280, 200, act[3], True)
@@ -1318,8 +1556,20 @@ class Console:
             play = pygame.Rect(80, info_y + 140, 300, 80)
             pygame.draw.rect(self.screen, TEXT, play, border_radius=40)
             self.text("Jugar", 36, (10, 14, 20), play.center, bold=True, anchor="center")
+            st = self.stats.get(game.key, {})
+            extra = []
+            if st.get("fav"):
+                extra.append("★")
+            if st.get("time"):
+                extra.append(f"Jugado {userlib.format_duration(st['time'])}")
+            if st.get("last"):
+                extra.append(f"Última vez: {time.strftime('%d/%m/%Y', time.localtime(st['last']))}")
+            if extra:
+                self.text("   ·   ".join(extra), 26, DIM, (play.right + 30, play.centery), anchor="midleft", maxw=W - play.right - 120)
             idx = self.pc_sel if self.row_i == 1 else self.sel
             self.text(f"{idx + 1} / {len(self.cur_list())}", 26, DIM, (W - 80, info_y + 20), anchor="topright")
+        if self.filter_text:
+            self.text(f"Búsqueda: {self.filter_text}", 24, ACCENT, (W - 80, 140), anchor="topright")
         self.draw_hints([("A", "Jugar"), ("Y", "Opciones"), ("X", "Recargar"), ("≡", "Menú")])
 
     def content_width(self):
@@ -1355,6 +1605,18 @@ class Console:
         self.draw_hints([("A", "Elegir"), ("B", "Volver")])
 
     def draw_updates_info(self, y):
+        a = self.app_update
+        r = self.text("AnyPS5 Console", 30, TEXT, (140, y), bold=True)
+        if a:
+            state = ("Actualización disponible", ACCENT) if a["update"] else ("Al día", GOOD)
+            detail = f"local {paths.VERSION}  ·  disponible {a['remote']}"
+        elif getattr(self, "app_err", ""):
+            state, detail = ("Sin conexión", BAD), f"local {paths.VERSION}"
+        else:
+            state, detail = ("Comprobando...", DIM), f"local {paths.VERSION}"
+        self.text(detail, 22, DIM, (r.right + 16, y + 8))
+        self.text(state[0], 26, state[1], (110 + self.content_width() - 30, y + 4), anchor="topright")
+        y += 60
         for ch in self.channels():
             u = self.updates.get(ch)
             err = self.update_err.get(ch, "")
@@ -1390,10 +1652,24 @@ class Console:
             a = t * 4 + i * math.pi / 4
             c = int(80 + 175 * ((i + int(t * 8)) % 8) / 7)
             pygame.draw.circle(self.screen, (c, c, c), (W - 180 + int(36 * math.cos(a)), 200 + int(36 * math.sin(a))), 7)
-        y = 290
-        for line in self.log_lines[-20:]:
+        bar = pygame.Rect(120, 250, W - 240, 10)
+        pygame.draw.rect(self.screen, (50, 56, 68), bar, border_radius=5)
+        if self.progress is not None:
+            fill = bar.copy()
+            fill.width = max(10, int(bar.width * max(0.0, min(1.0, self.progress))))
+            pygame.draw.rect(self.screen, ACCENT, fill, border_radius=5)
+            self.text(f"{int(self.progress * 100)}%", 22, DIM, (bar.right, bar.bottom + 8), anchor="topright")
+        else:
+            seg = bar.width // 5
+            x = bar.x + int((t * 0.6 % 1.0) * (bar.width + seg)) - seg
+            part = pygame.Rect(max(bar.x, x), bar.y, min(seg, bar.right - max(bar.x, x)), bar.height)
+            if part.width > 0:
+                pygame.draw.rect(self.screen, ACCENT, part, border_radius=5)
+        y = 300
+        for line in self.log_lines[-19:]:
             self.text(line, 24, DIM, (124, y), maxw=W - 250)
             y += 34
+        self.draw_hints([("B", "Cancelando…" if self.cancelling else "Cancelar")])
 
     def draw_audit(self):
         v = self.audit_view
@@ -1456,6 +1732,8 @@ class Console:
         sub = self.render("Cargando juego…" if t < 20 else "En juego · cierra el juego para volver", 24, DIM)
         sub.set_alpha(a)
         self.screen.blit(sub, sub.get_rect(center=(W // 2, H // 2 + 30)))
+        if t > 3:
+            self.draw_hints([("G", "Menú rápido (botón Guide)")])
 
     def draw_error(self):
         self.draw_background(None)
@@ -1555,7 +1833,8 @@ class Console:
         self.screen.blit(dim, (0, 0))
         url = self.kb.get("mode") == "url"
         layout, actions, limit = self.kb_layout()
-        self.text("Añadir fork de AnyPS5" if url else "Crear usuario", 52, TEXT, (W // 2, 140), bold=True, anchor="center")
+        title = {"url": "Añadir fork de AnyPS5", "search": "Buscar juego"}.get(self.kb.get("mode"), "Crear usuario")
+        self.text(title, 52, TEXT, (W // 2, 140), bold=True, anchor="center")
         if url:
             self.text("Enlace del repositorio. Para una rama: …/tree/rama o enlace#rama", 24, DIM, (W // 2, 200), anchor="center")
         fw = 1200 if url else 840
@@ -1674,9 +1953,10 @@ class Console:
             dt = min(0.05, clock.get_time() / 1000)
             self.read_events()
             self.poll_queue()
+            self.set_music(self.state not in ("boot", "playing"))
             if self.state == "playing":
                 self.draw()
-                clock.tick(5)
+                clock.tick(30 if self.menu else 5)
                 continue
             self.ambient.update(dt)
             self.fade = max(0.0, self.fade - dt * 2.2)

@@ -68,6 +68,44 @@ def tick(path):
     chime(path, (1567.98,), 0.18)
 
 
+def music(path, rate=22050, length=32):
+    chords = [(130.81, 196.0, 246.94, 329.63), (110.0, 164.81, 220.0, 246.94),
+              (87.31, 130.81, 220.0, 261.63), (98.0, 146.83, 196.0, 293.66)]
+    chords = [[round(f * length) / length for f in c] for c in chords]
+    step = length / len(chords)
+    n = int(rate * length)
+    tau = math.tau
+    out = array.array("h")
+    for i in range(n):
+        t = i / rate
+        v = 0.0
+        for k, chord in enumerate(chords):
+            dt = ((t - (k * step + step / 2) + length / 2) % length) - length / 2
+            if abs(dt) >= step * 0.75:
+                continue
+            env = math.cos(math.pi * dt / (step * 1.5)) ** 2
+            for j, f in enumerate(chord):
+                v += math.sin(tau * f * t + j) * env * (0.26 if j == 0 else 0.18)
+        shimmer = 0.04 * math.sin(tau * (1046.5 * 1) * t) * (0.5 + 0.5 * math.sin(tau * t / length * 4))
+        sample = int(max(-1.0, min(1.0, (v * 0.32 + shimmer * 0.3))) * 32767)
+        out.append(sample)
+        out.append(sample)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(out.tobytes())
+
+
+def ensure_music(folder):
+    p = Path(folder) / "music.wav"
+    if not p.exists():
+        tmp = p.with_suffix(".tmp.wav")
+        music(tmp)
+        tmp.replace(p)
+    return p
+
+
 def ensure(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)

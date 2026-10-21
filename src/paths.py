@@ -2,14 +2,17 @@ import os
 import sys
 from pathlib import Path
 
+VERSION = "1.1.0"
+APP_REPO = "Techx3/AnyPS5-Console"
 FROZEN = getattr(sys, "frozen", False)
 CODE = Path(__file__).resolve().parent
 RES = Path(getattr(sys, "_MEIPASS", CODE))
 ASSETS = RES / "assets"
 
+EXE_DIR = Path(sys.executable).resolve().parent if FROZEN else CODE
+PORTABLE = FROZEN and (EXE_DIR / "portable.txt").exists()
 if FROZEN:
-    EXE_DIR = Path(sys.executable).resolve().parent
-    if (EXE_DIR / "portable.txt").exists():
+    if PORTABLE:
         DATA = EXE_DIR / "data"
     else:
         DATA = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AnyPS5Console"

@@ -48,3 +48,4 @@ Name: "{autodesktop}\AnyPS5 Console"; Filename: "{app}\AnyPS5Console.exe"; Tasks
 [Run]
 Filename: "{app}\AnyPS5Console.exe"; Parameters: "--install-tools"; StatusMsg: "{cm:Downloading}"; Flags: runhidden waituntilterminated; Tasks: buildtools
 Filename: "{app}\AnyPS5Console.exe"; Description: "{cm:LaunchProgram,AnyPS5 Console}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\AnyPS5Console.exe"; Flags: nowait; Check: WizardSilent

@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import paths  # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = paths.VERSION
 
 
 def install_tools_cli():

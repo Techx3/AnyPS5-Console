@@ -3,6 +3,8 @@ import shutil
 import subprocess
 import urllib.request
 import zipfile
+
+import procs
 from pathlib import Path
 
 REPO = "boykopovar/AnyPS5"
@@ -83,6 +85,7 @@ def _download(url, dst, log):
         total = int(r.headers.get("Content-Length") or 0)
         done, last = 0, -10
         while True:
+            procs.check_cancel()
             chunk = r.read(1 << 20)
             if not chunk:
                 break
@@ -229,3 +232,66 @@ def install_tools(tools_dir, log):
             z.extractall(tools_dir)
         zpath.unlink()
     return tools_status(tools_dir)
+
+
+def _version_tuple(v):
+    parts = []
+    for x in v.lstrip("v").split("-")[0].split("."):
+        try:
+            parts.append(int(x))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def app_check(repo, current):
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
+                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "AnyPS5-Console"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.load(r)
+    tag = data["tag_name"]
+    assets = {a["name"]: a["browser_download_url"] for a in data.get("assets", [])}
+    return {"remote": tag, "local": "v" + current.lstrip("v"),
+            "update": _version_tuple(tag) > _version_tuple(current), "assets": assets}
+
+
+def app_update(check, data_dir, exe_dir, portable, log):
+    import os
+    import tempfile
+    tag = check["remote"]
+    work = Path(tempfile.mkdtemp(prefix="anyps5console-"))
+    if portable:
+        name = next((n for n in check["assets"] if n.endswith("-portable.zip")), None)
+        if not name:
+            raise RuntimeError(f"{tag}: portable zip not found")
+        zpath = work / name
+        _download(check["assets"][name], zpath, log)
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(work / "new")
+        src = next((p.parent for p in (work / "new").rglob("AnyPS5Console.exe")), None)
+        if src is None:
+            raise RuntimeError("AnyPS5Console.exe not found in the zip")
+        script = work / "update.cmd"
+        script.write_text(
+            "@echo off\r\n"
+            f"set PID={os.getpid()}\r\n"
+            ":wait\r\n"
+            "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul && (timeout /t 1 >nul & goto wait)\r\n"
+            f"robocopy \"{src}\" \"{exe_dir}\" /E /XD data /NFL /NDL /NJH /NJS >nul\r\n"
+            f"start \"\" \"{Path(exe_dir) / 'AnyPS5Console.exe'}\"\r\n", "utf-8")
+        subprocess.Popen(["cmd", "/c", str(script)], creationflags=NO_WINDOW | 0x00000008)
+    else:
+        name = next((n for n in check["assets"] if n.lower().startswith("anyps5console-setup") and n.endswith(".exe")), None)
+        if not name:
+            raise RuntimeError(f"{tag}: installer not found")
+        exe = work / name
+        _download(check["assets"][name], exe, log)
+        script = work / "update.cmd"
+        script.write_text(
+            "@echo off\r\n"
+            f"set PID={os.getpid()}\r\n"
+            ":wait\r\n"
+            "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul && (timeout /t 1 >nul & goto wait)\r\n"
+            f"\"{exe}\" /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS\r\n", "utf-8")
+        subprocess.Popen(["cmd", "/c", str(script)], creationflags=NO_WINDOW | 0x00000008)
+    return True

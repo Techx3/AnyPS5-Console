@@ -108,3 +108,30 @@ def bind_saves(out, target, legacy, log):
                 log(f"Saves importados de {old}")
                 break
     make_link(sd, target)
+
+
+def _stats_path(base, uid):
+    return Path(base) / uid / "stats.json"
+
+
+def load_stats(base, uid):
+    try:
+        return json.loads(_stats_path(base, uid).read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_stats(base, uid, stats):
+    p = _stats_path(base, uid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(stats, indent=1), "utf-8")
+    tmp.replace(p)
+
+
+def format_duration(seconds):
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "<1 min"
+    h, m = divmod(minutes, 60)
+    return f"{h} h {m} min" if h else f"{m} min"
