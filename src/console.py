@@ -57,11 +57,14 @@ paths.setup_environment()
 
 def load_conf():
     conf = {"channel": "repo", "games_dir": "", "fullscreen": True, "check_updates": True, "game_fullscreen": True,
-            "lang": "en", "game_lang": "auto", "music": True, "sort": "recent", "compat": False}
+            "lang": "en", "game_lang": "auto", "music": True, "sort": "recent", "compat": True}
     try:
         conf.update(json.loads(CONF_PATH.read_text("utf-8")))
     except (OSError, ValueError):
         pass
+    if conf.get("compat_default", 0) < 1:
+        conf["compat"] = True
+        conf["compat_default"] = 1
     if not conf["games_dir"]:
         legacy = paths.CODE.parent / "launcher" / "config.json"
         try:
