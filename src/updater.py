@@ -291,13 +291,8 @@ def install_tools(tools_dir, log):
 
 
 def _version_tuple(v):
-    parts = []
-    for x in v.lstrip("v").split("-")[0].split("."):
-        try:
-            parts.append(int(x))
-        except ValueError:
-            parts.append(0)
-    return tuple(parts)
+    """'v1.2.3', 'v.1.2.3', '1.2.3-beta' -> (1, 2, 3)."""
+    return tuple(int(x) for x in re.findall(r"\d+", str(v).split("-")[0])) or (0,)
 
 
 def app_check(repo, current):
