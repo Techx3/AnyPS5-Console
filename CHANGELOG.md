@@ -24,6 +24,7 @@ Release notes for AnyPS5 Console. The section of each version is the description
 
 **Other**
 - Game modules shipped beside `eboot.bin` (for example Castlevania Dominus Collection, Minecraft) are converted with the game; before, they were reported as missing libraries.
+- The function check recognizes game modules by their own module name (for example `dra01.prx` is `libdra01`), as AnyPS5 does: Castlevania Dominus Collection no longer shows 22 missing functions and 5 missing libraries.
 - Games go fullscreen with AnyPS5's own F11 toggle, so official AnyPS5 builds work without patches (borderless window as fallback).
 - Sets `ANYPS5_FULLSCREEN` and `ANYPS5_USER_NAME` (proposed to AnyPS5) so games open fullscreen directly and show the console user's name.
 - Experimental Linux / Steam Deck AppImage (builds AnyPS5 main or forks locally).
