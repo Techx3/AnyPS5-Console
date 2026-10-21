@@ -1,0 +1,69 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller pyflakes
+
+      - name: Check
+        run: python -m pyflakes src
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build executable
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name AnyPS5Console
+          --icon src/assets/anyps5.ico --add-data "src/assets;assets" --paths src
+          --collect-submodules pygame src/main.py
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item dist/AnyPS5Console/portable.txt -ItemType File | Out-Null
+          Compress-Archive -Path dist/AnyPS5Console -DestinationPath "AnyPS5Console-${{ steps.version.outputs.value }}-portable.zip"
+          Remove-Item dist/AnyPS5Console/portable.txt
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.value }}" installer/AnyPS5Console.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnyPS5Console-${{ steps.version.outputs.value }}
+          path: |
+            AnyPS5Console-*-portable.zip
+            installer/Output/*.exe
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            AnyPS5Console-*-portable.zip
+            installer/Output/*.exe
