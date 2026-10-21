@@ -216,7 +216,7 @@ def status_of(converted, window_after, seconds, exit_code, closed_by_user=False)
 
 
 def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, anyps5, console_version,
-          audit_result, log_path, error="", private_words=()):
+          audit_result, log_path, error="", private_words=(), shots=()):
     clean = sanitizer(private_words)
     lines = []
     if log_path and Path(log_path).is_file():
@@ -263,6 +263,7 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
         "missing": missing,
         "stop": stop,
         "log_tail": [clean(x)[:300] for x in tail],
+        "shots_local": [dict(x) for x in shots],
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -270,6 +271,8 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
 def digest(report):
     key = {k: report.get(k) for k in ("status", "anyps5", "game_version", "absent", "stub", "missing_libs", "stop")}
     key["exit"] = report.get("exit_code") if report.get("status") != "playable" else 0
+    if report.get("shots_local"):
+        key["shots"] = sorted(x["minute"] for x in report["shots_local"])
     return hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -290,6 +293,9 @@ def body_of(report):
     if report.get("stop"):
         s = report["stop"]
         lines.append(f"**Stops at:** `{s['lib']}` {s['name'] or s['nid']}")
+    if report.get("shots"):
+        lines += ["", " ".join(f'<img src="{SHOTS_RAW}{x["path"]}" width="320" alt="{x["minute"]} min">'
+                               for x in report["shots"])]
     if report["log_tail"]:
         lines += ["", "<details><summary>Log (last lines)</summary>", "", "```", *report["log_tail"][-40:], "```",
                   "</details>"]
@@ -325,11 +331,63 @@ def can_send(store, conf=None):
     return bool(store.token() or relay_url(conf))
 
 
+SHOT_MINUTES = (2, 10)
+SHOTS_RAW = f"https://raw.githubusercontent.com/{REPO}/shots/"
+SHOT_WIDTH = 960
+
+
+def shot_jpeg(bgra, w, h, out_path):
+    import pygame
+    surf = pygame.image.frombuffer(bgra, (w, h), "BGRA")
+    size = (SHOT_WIDTH, max(1, round(h * SHOT_WIDTH / w))) if w > SHOT_WIDTH else (w, h)
+    rgb = pygame.Surface(size)
+    rgb.blit(pygame.transform.smoothscale(surf, size) if size != (w, h) else surf, (0, 0))
+    pygame.image.save(rgb, str(out_path))
+    return Path(out_path).read_bytes()
+
+
+def upload_shot(url, title_id, minute, reporter, jpeg):
+    import base64
+    r = _post(url + "/shot", {"title_id": title_id, "minute": minute, "reporter": reporter,
+                              "image": base64.b64encode(jpeg).decode()})
+    return r.get("path")
+
+
 def send_relay(url, report):
     return _post(url + "/report", report).get("issue")
 
 
+_flush_lock = __import__("threading").Lock()
+
+
+def _drop_shots(report):
+    for x in report.get("shots_local", []):
+        try:
+            Path(x["file"]).unlink()
+        except OSError:
+            pass
+
+
+def _upload_shots(relay, report, log):
+    shots = []
+    for x in report.pop("shots_local", []):
+        try:
+            if relay:
+                path = upload_shot(relay, report["title_id"], x["minute"], report["reporter"], Path(x["file"]).read_bytes())
+                if path:
+                    shots.append({"minute": x["minute"], "path": path})
+        except (OSError, ValueError) as e:
+            log(f"Captura no enviada: {e}")
+    report["shots"] = shots
+    return report
+
+
 def flush(store, log=lambda s: None, conf=None):
+    with _flush_lock:
+        return _flush(store, log, conf)
+
+
+def _flush(store, log, conf):
     token = store.token()
     relay = relay_url(conf)
     if not token and not relay:
@@ -343,10 +401,13 @@ def flush(store, log=lambda s: None, conf=None):
             continue
         d = digest(report)
         if store.sent().get(report["title_id"]) == d:
+            _drop_shots(report)
             f.unlink(missing_ok=True)
             continue
         report.setdefault("reporter", store.reporter())
+        local = list(report.get("shots_local", []))
         try:
+            report = _upload_shots(relay, report, log)
             if token:
                 send(token, report)
             else:
@@ -360,6 +421,7 @@ def flush(store, log=lambda s: None, conf=None):
             log(f"Reporte no enviado: {e}")
             break
         store.mark_sent(report["title_id"], d)
+        _drop_shots({"shots_local": local})
         f.unlink(missing_ok=True)
         sent += 1
     return sent

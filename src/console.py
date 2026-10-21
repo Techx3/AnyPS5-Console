@@ -612,17 +612,27 @@ class Console:
                     seen["t"] = time.time() - t0
                     return
                 done.wait(1.0)
+        shots = []
+
+        def shooter():
+            for minute in compat.SHOT_MINUTES:
+                if done.wait(max(0.0, minute * 60 - (time.time() - t0))):
+                    return
+                self.take_shot(game, minute, shots)
         if os.name == "nt":
             threading.Thread(target=watch, daemon=True).start()
         else:
             seen["t"] = 0.0
+        shot_thread = threading.Thread(target=shooter, daemon=True)
+        shot_thread.start()
         rc = core.launch(exe, self.log)
         done.set()
+        shot_thread.join(timeout=15)
         played = time.time() - t0
         self.record_play(game, played)
         self.game_exe = None
         self.report(game, channel, converted=True, window_after=seen.get("t"), seconds=played, exit_code=rc,
-                    audit_result=result, log_path=exe.parent / "last_run.log")
+                    audit_result=result, log_path=exe.parent / "last_run.log", shots=shots)
         self.q.put(("ended", rc, str(exe.parent / "last_run.log")))
 
     def anyps5_version(self, channel=None):
@@ -642,7 +652,7 @@ class Console:
             return "-"
 
     def report(self, game, channel, *, converted, window_after=None, seconds=0, exit_code=None, audit_result=None,
-               log_path=None, error=""):
+               log_path=None, error="", shots=()):
         if not self.conf.get("compat"):
             return
         try:
@@ -654,11 +664,26 @@ class Console:
                              anyps5={"channel": ch if not ch.startswith("fork:") else "fork " + ch[5:],
                                      "version": self.anyps5_version(ch)},
                              console_version=paths.VERSION, audit_result=audit_result, log_path=log_path,
-                             error=error, private_words=words)
+                             error=error, private_words=words, shots=shots)
             self.compat_store.queue(r)
             threading.Thread(target=self.flush_reports, daemon=True).start()
         except Exception as e:
             self.log(f"Reporte de compatibilidad: {e}")
+
+    def take_shot(self, game, minute, shots):
+        if not self.conf.get("compat") or not compat.relay_url(self.conf) or not self.game_exe:
+            return
+        try:
+            cap = winfs.capture(self.game_exe)
+            if not cap:
+                return
+            folder = self.compat_store.dir / "shots"
+            folder.mkdir(exist_ok=True)
+            out = folder / f"{game.key}-{int(time.time())}-{minute}m.jpg"
+            compat.shot_jpeg(*cap, out)
+            shots.append({"minute": minute, "file": str(out)})
+        except Exception as e:
+            self.log(f"Captura: {e}")
 
     def flush_reports(self):
         try:

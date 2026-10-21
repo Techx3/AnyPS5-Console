@@ -105,12 +105,90 @@ if os.name == "nt":
 
     def has_window(exe_path):
         return bool(_windows_of(exe_path))
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    gdi32.DeleteDC.argtypes = [wintypes.HDC]
+    gdi32.BitBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HDC,
+                             ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
+                                ctypes.c_void_p, wintypes.UINT]
+    user32.GetDC.restype = wintypes.HDC
+    user32.GetDC.argtypes = [wintypes.HWND]
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    SRCCOPY = 0x00CC0020
+
+    def _grab(hwnd, w, h, from_screen):
+        src = user32.GetDC(None if from_screen else hwnd)
+        mem = gdi32.CreateCompatibleDC(src)
+        bmp = gdi32.CreateCompatibleBitmap(src, w, h)
+        old = gdi32.SelectObject(mem, bmp)
+        try:
+            if from_screen:
+                pt = wintypes.POINT(0, 0)
+                user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                ok = gdi32.BitBlt(mem, 0, 0, w, h, src, pt.x, pt.y, SRCCOPY)
+            else:
+                ok = user32.PrintWindow(hwnd, mem, 3)  # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+            if not ok:
+                return None
+            info = BITMAPINFOHEADER()
+            info.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            info.biWidth, info.biHeight, info.biPlanes, info.biBitCount = w, -h, 1, 32
+            buf = ctypes.create_string_buffer(w * h * 4)
+            if not gdi32.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(info), 0):
+                return None
+            return buf.raw
+        finally:
+            gdi32.SelectObject(mem, old)
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(mem)
+            user32.ReleaseDC(None if from_screen else hwnd, src)
+
+    def _blank(data):
+        step = 4 * 97
+        return not data or max(max(data[c::step]) for c in range(3)) < 8  # B, G, R only; alpha is unreliable
+
+    def capture(exe_path):
+        """Game window client area as (BGRA bytes, width, height), only that window; None if not possible."""
+        best = None
+        for hwnd in _windows_of(exe_path):
+            r = wintypes.RECT()
+            user32.GetClientRect(hwnd, ctypes.byref(r))
+            if r.right * r.bottom > (best[1] * best[2] if best else 0):
+                best = (hwnd, r.right, r.bottom)
+        if not best or best[1] < 64 or best[2] < 64:
+            return None
+        hwnd, w, h = best
+        data = _grab(hwnd, w, h, False)
+        if (data is None or _blank(data)) and user32.GetForegroundWindow() == hwnd:
+            data = _grab(hwnd, w, h, True)  # the game is on top, so the screen area is the game
+        if data is None or _blank(data):
+            return None
+        return data, w, h
 else:
     def focus(exe_path):
         return False
 
     def has_window(exe_path):
         return False
+
+    def capture(exe_path):
+        return None
 
     def fullscreen_when_ready(exe_path, ref_hwnd, timeout=90, stop=lambda: False):
         return False
