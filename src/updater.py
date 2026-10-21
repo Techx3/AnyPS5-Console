@@ -1,3 +1,4 @@
+import re
 import json
 import shutil
 import subprocess
@@ -44,8 +45,14 @@ def repo_update(root, upstream, log):
         if p.returncode != 0:
             raise RuntimeError("git clone: " + (p.stderr or p.stdout).strip()[-500:])
         return
-    log(f"Descargando cambios de {upstream} (main)...")
-    _git(root, "fetch", upstream, "main", timeout=600)
+    merge_from(root, upstream, "main", log)
+
+
+def merge_from(root, url, branch, log):
+    """Fetch url/branch and merge it into the current branch, keeping local commits; aborts on conflict."""
+    root = Path(root)
+    log(f"Descargando cambios de {url} ({branch or 'HEAD'})...")
+    _git(root, "fetch", url, branch or "HEAD", timeout=1800)
     behind = _git(root, "rev-list", "--count", "HEAD..FETCH_HEAD").stdout.strip()
     if behind == "0":
         log("Ya estaba al día.")
@@ -161,6 +168,36 @@ def parse_fork(text):
     return {"name": name, "url": text + ".git" if text.startswith("http") else text, "branch": branch.strip()}
 
 
+def repo_info(root):
+    """origin URL and current branch of a local clone."""
+    origin = _git(root, "remote", "get-url", "origin", check=False, timeout=20).stdout.strip()
+    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD", check=False, timeout=20).stdout.strip()
+    return origin, ("" if branch == "HEAD" else branch)
+
+
+def is_upstream(url):
+    u = url.lower().rstrip("/")
+    u = u[:-4] if u.endswith(".git") else u
+    return u.endswith("github.com/boykopovar/anyps5") or u.endswith("github.com:boykopovar/anyps5")
+
+
+def adopt_release(base, folder):
+    """Use a release the user already unpacked (relinker*.exe + prx libraries) as the installed stable version."""
+    folder = Path(folder).resolve()
+    relinker = next(iter(sorted(folder.rglob("relinker*.exe"))), None) or next(iter(sorted(folder.rglob("relinker"))), None)
+    prx = next(iter(sorted(folder.rglob("*.prx"))), None)
+    if not relinker or not prx:
+        raise RuntimeError("En esa carpeta no hay relinker .exe y librerías .prx de una release de AnyPS5.")
+    m = re.search(r"v\d+\.\d+\.\d+", " ".join([relinker.name, folder.name, str(prx.parent)]))
+    info = {"tag": m.group(0) if m else "local", "relinker": str(relinker), "libs": str(prx.parent), "own": True}
+    tools = folder / "tools"
+    if (tools / "import_audit.py").is_file():
+        info["tools"] = str(tools)
+    Path(base).mkdir(parents=True, exist_ok=True)
+    (Path(base) / "current.json").write_text(json.dumps(info, indent=2), "utf-8")
+    return info
+
+
 def _remote_head(url, branch):
     ref = f"refs/heads/{branch}" if branch else "HEAD"
     p = subprocess.run(["git", "ls-remote", url, ref], capture_output=True, text=True, errors="replace",
@@ -172,6 +209,11 @@ def _remote_head(url, branch):
 
 def fork_check(path, fork):
     remote = _remote_head(fork["url"], fork["branch"])
+    if fork.get("own") and (Path(path) / ".git").exists():
+        head = _git(path, "rev-parse", "HEAD").stdout.strip()
+        has = _git(path, "cat-file", "-e", remote + "^{commit}", check=False).returncode == 0
+        merged = has and _git(path, "merge-base", "--is-ancestor", remote, "HEAD", check=False).returncode == 0
+        return {"remote": remote[:9], "local": head[:9], "update": not merged}
     if not (Path(path) / ".git").exists():
         return {"remote": remote[:9], "local": "-", "update": True}
     head = _git(path, "rev-parse", "HEAD").stdout.strip()
@@ -180,6 +222,11 @@ def fork_check(path, fork):
 
 def fork_sync(path, fork, log):
     path = Path(path)
+    if fork.get("own"):
+        if not (path / ".git").exists():
+            raise RuntimeError(f"No se encontró el repositorio en {path}")
+        merge_from(path, fork["url"], fork["branch"], log)
+        return
     if not (path / ".git").exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         log(f"Clonando {fork['url']}...")

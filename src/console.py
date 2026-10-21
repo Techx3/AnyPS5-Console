@@ -291,6 +291,9 @@ class Console:
         return self.conf.setdefault("forks", [])
 
     def fork_dir(self, name):
+        f = next((x for x in self.forks() if x["name"] == name), None)
+        if f and f.get("dir"):
+            return Path(f["dir"])
         return HERE / "forks" / name
 
     def fork_of(self, ch):
@@ -323,6 +326,11 @@ class Console:
         cache[ch] = (ok, time.time())
         self._ready = cache
         return ok
+
+    def use_channel(self, ch):
+        """Select a channel the user set up on purpose, even before it is built."""
+        self.conf["channel"] = ch
+        save_conf(self.conf)
 
     def set_channel(self, ch):
         if ch == self.conf["channel"]:
@@ -513,8 +521,10 @@ class Console:
         self.q.put(("done", "Herramientas de compilación instaladas."))
 
     def task_update_fork(self, fork):
-        self.require_tools()
         path = self.fork_dir(fork["name"])
+        if not (fork.get("own") and (path / "build" / "CMakeCache.txt").is_file()
+                and updater.tools_status(paths.TOOLS)["git"]):
+            self.require_tools()
         updater.fork_sync(path, fork, self.log)
         cfg = self.base_cfg()
         cfg["anyps5_dir"] = str(path)
@@ -752,7 +762,7 @@ class Console:
         root = self.anyps5_root()
         if not (root / ".git").exists() and not self.conf.get("anyps5_dir_asked"):
             self.open_menu(self.tr("¿Ya tienes AnyPS5 en tu PC?"), [
-                ("Sí, elegir su carpeta", lambda: self.pick_anyps5_dir(then_update=True)),
+                ("Sí, elegir su carpeta", self.use_existing_menu),
                 ("No, descargar una copia nueva", lambda: self.confirm_new_copy()),
                 ("Cancelar", None)])
             return
@@ -763,18 +773,62 @@ class Console:
         save_conf(self.conf)
         self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
 
+    def use_existing_menu(self):
+        self.open_menu(self.tr("¿Qué AnyPS5 tienes?"), [
+            ("Main oficial (boykopovar/AnyPS5)", lambda: self.pick_existing("repo")),
+            ("Release estable (relinker .exe)", lambda: self.pick_existing("release")),
+            ("Un fork (otro repositorio)", lambda: self.pick_existing("fork")),
+            ("Cancelar", None)])
+
+    def pick_existing(self, kind):
+        d = self.ask_path("Carpeta de AnyPS5", True)
+        if not d:
+            return
+        root = Path(d)
+        self.conf["anyps5_dir_asked"] = True
+        save_conf(self.conf)
+        if kind == "release":
+            try:
+                info = updater.adopt_release(REL_DIR, root)
+            except Exception as e:
+                self.toast = (str(e), time.time() + 7)
+                return
+            self._ready = {}
+            self.set_channel("release")
+            self.toast = (f"Versión estable {info['tag']} lista", time.time() + 6)
+            self.worker(self.task_check_updates)
+            return
+        if not ((root / ".git").exists() and (root / "CMakeLists.txt").is_file() and (root / "core").is_dir()):
+            self.toast = ("Esa carpeta no es un repositorio de AnyPS5 (falta .git, CMakeLists.txt o core).",
+                          time.time() + 7)
+            return
+        origin, branch = updater.repo_info(root)
+        if kind == "repo":
+            self.pick_anyps5_dir(root=root)
+            self.use_channel("repo")
+            if origin and not updater.is_upstream(origin):
+                self.toast = ("Su origin es otro repositorio; se actualizará desde boykopovar/AnyPS5 main.",
+                              time.time() + 8)
+            return
+        url = origin if origin.startswith("http") or origin.startswith("git@") else "https://github.com/"
+        if branch and branch not in ("main", "master"):
+            url += "#" + branch
+        self.kb = {"name": url, "r": 1, "c": 0, "mode": "url", "own_dir": str(root)}
+        self.go("newuser")
+
     def anyps5_dir_menu(self):
-        items = [("Elegir mi copia de AnyPS5…", lambda: self.pick_anyps5_dir())]
+        items = [("Elegir mi copia de AnyPS5…", self.use_existing_menu)]
         if self.conf.get("anyps5_dir"):
             items.append(("Usar la copia de la consola", self.reset_anyps5_dir))
         items.append(("Cerrar", None))
         self.open_menu(self.tr("Carpeta de AnyPS5 (repositorio)"), items)
 
-    def pick_anyps5_dir(self, then_update=False):
-        d = self.ask_path("Carpeta de AnyPS5", True, self.conf.get("anyps5_dir") or None)
-        if not d:
-            return
-        root = Path(d)
+    def pick_anyps5_dir(self, then_update=False, root=None):
+        if root is None:
+            d = self.ask_path("Carpeta de AnyPS5", True, self.conf.get("anyps5_dir") or None)
+            if not d:
+                return
+            root = Path(d)
         if not ((root / ".git").exists() and (root / "CMakeLists.txt").is_file() and (root / "core").is_dir()):
             self.toast = ("Esa carpeta no es un repositorio de AnyPS5 (falta .git, CMakeLists.txt o core).",
                           time.time() + 7)
@@ -1227,6 +1281,7 @@ class Console:
             rows.insert(0, (f"Actualizar AnyPS5 Console a {a['remote']}", lambda: self.start_busy(
                 "Actualizando AnyPS5 Console", self.task_update_app)))
         rows += [
+            ("Usar mi AnyPS5 existente…", self.use_existing_menu),
             ("Añadir fork (enlace de GitHub)", self.start_fork_entry),
             ("Buscar de nuevo", lambda: self.worker(self.task_check_updates)),
             ("Volver", lambda: setattr(self, "state", "home")),
@@ -1240,9 +1295,10 @@ class Console:
                   lambda: self.start_busy(f"Fork {f['name']}", self.task_update_fork, f))]
         if ch != self.conf["channel"]:
             items.append(("Usar esta versión", lambda: self.set_channel(ch)))
-        items += [("Quitar de la lista", lambda: self.remove_fork(f, False)),
-                  ("Quitar y borrar sus archivos", lambda: self.remove_fork(f, True)),
-                  ("Cerrar", None)]
+        items.append(("Quitar de la lista", lambda: self.remove_fork(f, False)))
+        if not f.get("own"):
+            items.append(("Quitar y borrar sus archivos", lambda: self.remove_fork(f, True)))
+        items.append(("Cerrar", None))
         self.open_menu(f"Fork {f['name']}", items)
 
     def remove_fork(self, f, delete):
@@ -1263,12 +1319,26 @@ class Console:
         except Exception as e:
             self.toast = (str(e), time.time() + 5)
             return
-        if any(f["name"] == fork["name"] for f in self.forks()):
+        own = self.kb.get("own_dir")
+        if own:
+            fork["dir"], fork["own"] = own, True
+            self.conf["forks"] = [f for f in self.forks() if f["name"] != fork["name"]]
+        elif any(f["name"] == fork["name"] for f in self.forks()):
             self.toast = (f"El fork {fork['name']} ya está en la lista", time.time() + 4)
             self.state = "updates"
             return
         self.forks().append(fork)
         save_conf(self.conf)
+        if own:
+            self._ready = {}
+            self.use_channel("fork:" + fork["name"])
+            self.state = "updates"
+            if core.find_relinker({"relinker": "", "anyps5_dir": own}):
+                self.toast = (f"Fork {fork['name']} listo.", time.time() + 6)
+                self.worker(self.task_check_updates)
+            else:
+                self.start_busy(f"Fork {fork['name']}", self.task_update_fork, fork)
+            return
         self.start_busy(f"Instalando fork {fork['name']}", self.task_update_fork, fork)
 
     def handle(self, action):
