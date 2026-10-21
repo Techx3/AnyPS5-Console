@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 
-VERSION = "1.1.5"
+VERSION = "1.1.7"
 APP_REPO = "Techx3/AnyPS5-Console"
 FROZEN = getattr(sys, "frozen", False)
 CODE = Path(__file__).resolve().parent
