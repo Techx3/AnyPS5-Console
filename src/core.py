@@ -161,8 +161,9 @@ def extra_module_dirs(game, max_depth=3):
             entries = sorted(d.iterdir())
         except OSError:
             return
-        if depth > 0 and any(e.is_file() and e.suffix.lower() == ".prx" and read_magic(e) in (b"\x7fELF",) + SELF_MAGICS
-                             for e in entries):
+        if any(e.is_file() and e.suffix.lower() == ".prx" and read_magic(e) in (b"\x7fELF",) + SELF_MAGICS
+               for e in entries):
+            # depth 0: modules beside eboot.bin (e.g. Castlevania Dominus Collection: dra01.prx ...) -> "--module-dir ."
             found.append(d.relative_to(game.path))
         if depth >= max_depth:
             return
@@ -193,7 +194,8 @@ def fingerprint(game, cfg, relinker):
     for m in list(MODULE_DIRS) + [str(x) for x in extra_module_dirs(game)]:
         d = game.path / m
         if d.is_dir():
-            for f in sorted(d.rglob("*")):
+            files = d.glob("*.prx") if m == "." else d.rglob("*")
+            for f in sorted(files):
                 if f.is_file():
                     add(f)
     if relinker:
