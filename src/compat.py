@@ -15,6 +15,8 @@ from pathlib import Path
 CLIENT_ID = "Ov23liTC0DFDVRDqDBsN"
 REPO = "Techx3/AnyPS5-Compat"
 PAGE = "https://techx3.github.io/AnyPS5-Compat/"
+# Relay (Cloudflare Worker) that files reports without a GitHub sign-in. Empty: sign-in required.
+RELAY = ""
 SCOPE = "public_repo"
 PLAYABLE_SECONDS = 600
 BOOT_SECONDS = 120
@@ -37,6 +39,16 @@ class Store:
 
     def _save(self, name, value):
         (self.dir / name).write_text(json.dumps(value, indent=1), "utf-8")
+
+    def reporter(self):
+        f = self.dir / "id.txt"
+        try:
+            return f.read_text("utf-8").strip()
+        except OSError:
+            import uuid
+            v = uuid.uuid4().hex[:16]
+            f.write_text(v, "utf-8")
+            return v
 
     def token(self):
         return self._json("auth.json", {}).get("token")
@@ -278,9 +290,22 @@ def send(token, report):
     return num
 
 
-def flush(store, log=lambda s: None):
+def relay_url(conf=None):
+    return ((conf or {}).get("compat_relay") or RELAY).rstrip("/")
+
+
+def can_send(store, conf=None):
+    return bool(store.token() or relay_url(conf))
+
+
+def send_relay(url, report):
+    return _post(url + "/report", report).get("issue")
+
+
+def flush(store, log=lambda s: None, conf=None):
     token = store.token()
-    if not token:
+    relay = relay_url(conf)
+    if not token and not relay:
         return 0
     sent = 0
     for f in store.queued():
@@ -293,10 +318,14 @@ def flush(store, log=lambda s: None):
         if store.sent().get(report["title_id"]) == d:
             f.unlink(missing_ok=True)
             continue
+        report.setdefault("reporter", store.reporter())
         try:
-            send(token, report)
+            if token:
+                send(token, report)
+            else:
+                send_relay(relay, report)
         except urllib.error.HTTPError as e:
-            if e.code == 401:
+            if e.code == 401 and token:
                 store.logout()
             log(f"Reporte no enviado: HTTP {e.code}")
             break

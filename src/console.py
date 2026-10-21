@@ -658,7 +658,7 @@ class Console:
 
     def flush_reports(self):
         try:
-            n = compat.flush(self.compat_store, self.log)
+            n = compat.flush(self.compat_store, self.log, self.conf)
             if n:
                 self.q.put(("toast", f"Reporte de compatibilidad enviado ({n})"))
         except Exception as e:
@@ -691,6 +691,9 @@ class Console:
             items.append(("Activar reportes", lambda: self.set_compat(True)))
         if st.token():
             items.append((f"Cerrar sesión de GitHub ({st.login_name()})", self.compat_logout))
+        elif compat.relay_url(self.conf):
+            items.append(("Firmar con mi cuenta de GitHub (opcional)", lambda: self.start_busy(
+                "Iniciar sesión con GitHub", self.task_github_login)))
         else:
             items.append(("Iniciar sesión con GitHub", lambda: self.start_busy("Iniciar sesión con GitHub",
                                                                                self.task_github_login)))
@@ -700,7 +703,7 @@ class Console:
     def set_compat(self, on):
         self.conf["compat"] = on
         save_conf(self.conf)
-        if on and not self.compat_store.token():
+        if on and not compat.can_send(self.compat_store, self.conf):
             self.start_busy("Iniciar sesión con GitHub", self.task_github_login)
         elif on:
             threading.Thread(target=self.flush_reports, daemon=True).start()
@@ -1048,7 +1051,9 @@ class Console:
         if not self.conf.get("compat"):
             return "No"
         login = self.compat_store.login_name()
-        return f"{self.tr('Sí')} · {login}" if login else self.tr("Sí (sin sesión)")
+        if login:
+            return f"{self.tr('Sí')} · {login}"
+        return self.tr("Sí") if compat.relay_url(self.conf) else self.tr("Sí (sin sesión)")
 
     def set_lang(self, code):
         self.conf["lang"] = code

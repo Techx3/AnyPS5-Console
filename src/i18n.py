@@ -274,6 +274,8 @@ T = [
      "正在从源代码运行：请用 git pull 更新。", "सोर्स कोड से चल रहा है: git pull से अपडेट करें।",
      "Exécution depuis le code source : mettez à jour avec git pull.", "التشغيل من الشيفرة المصدرية: حدّث باستخدام git pull."),
     ("Reportes de compatibilidad", "Compatibility reports", "兼容性报告", "संगतता रिपोर्ट", "Rapports de compatibilité", "تقارير التوافق"),
+    ("Firmar con mi cuenta de GitHub (opcional)", "Sign with my GitHub account (optional)", "使用我的 GitHub 账号署名（可选）",
+     "मेरे GitHub खाते से साइन करें (वैकल्पिक)", "Signer avec mon compte GitHub (facultatif)", "التوقيع بحسابي على GitHub (اختياري)"),
     ("Sí (sin sesión)", "Yes (not signed in)", "是（未登录）", "हाँ (साइन इन नहीं)", "Oui (non connecté)", "نعم (بدون تسجيل دخول)"),
     ("Activar reportes", "Turn on reports", "开启报告", "रिपोर्ट चालू करें", "Activer les rapports", "تفعيل التقارير"),
     ("Desactivar reportes", "Turn off reports", "关闭报告", "रिपोर्ट बंद करें", "Désactiver les rapports", "إيقاف التقارير"),
