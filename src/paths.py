@@ -10,12 +10,15 @@ RES = Path(getattr(sys, "_MEIPASS", CODE))
 ASSETS = RES / "assets"
 
 EXE_DIR = Path(sys.executable).resolve().parent if FROZEN else CODE
-PORTABLE = FROZEN and (EXE_DIR / "portable.txt").exists()
+APPIMAGE = os.environ.get("APPIMAGE", "")  # path of the running AppImage on Linux
+PORTABLE = FROZEN and not APPIMAGE and (EXE_DIR / "portable.txt").exists()
 if FROZEN:
     if PORTABLE:
         DATA = EXE_DIR / "data"
-    else:
+    elif os.name == "nt":
         DATA = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AnyPS5Console"
+    else:
+        DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "AnyPS5Console"
 elif CODE.parent.name == "tools":
     DATA = CODE
 else:

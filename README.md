@@ -10,6 +10,7 @@ From [Releases](../../releases):
 
 - `AnyPS5Console-Setup-<version>.exe`: installer, no administrator rights needed. Optional task: download the build tools (Git + MinGW-w64 GCC 15.2.0) for the Repository version and forks.
 - `AnyPS5Console-<version>-portable.zip`: unzip and run `AnyPS5Console.exe`. Data stays in the `data` folder next to it.
+- `AnyPS5Console-<version>-x86_64.AppImage` (experimental): Linux desktop and Steam Deck. `chmod +x` and run. AnyPS5 releases only ship Windows binaries, so on Linux the console builds AnyPS5 main or a fork (install `git cmake ninja-build gcc g++` with your package manager). Data in `~/.local/share/AnyPS5Console`.
 
 The installed version keeps its data in `%LOCALAPPDATA%\AnyPS5Console`. The console updates itself from *Menu* > *Updates* when a new release is out.
 
@@ -84,6 +85,26 @@ Paths and user names are removed from the log before sending.
 
 **Turning it off:** *Settings* > *Compatibility reports* > *Turn off reports*. *Sign with my GitHub account* (optional) sends the reports under your GitHub user.
 
+**On each cover** an icon shows how the game did on your PC: green ✓ *Works* (10+ minutes without crashing), amber − *Boots*, red ✕ *Doesn't load*. Before the first session it comes from the function check (*Probably doesn't load* when functions are missing).
+
+**AnyPS5 pull requests for your games:** the console checks every hour which open [AnyPS5 pull requests](https://github.com/boykopovar/AnyPS5/pulls) implement functions your games are missing and tells you (*Menu* > *PRs for your games*, or *Options* on a game).
+
+## Per game
+
+*Options* (Y) on a game:
+
+- **Game profile**: AnyPS5 version used for that game, `APS5_*` environment variables (for example `APS5_FULLSCREEN=0`) and extra relinker arguments. Only that game is affected; changing the arguments reconverts it next time.
+- **Trophies**: the trophies AnyPS5 records for the current user, with icons, grade and unlock date (from the game's `sce_sys/trophy2` package).
+- **View in the compatibility list**, **PRs that would help it**, **System functions**.
+
+The home screen plays the game's own theme (`sce_sys/snd0.at9`, decoded with [LibAtrac9](native/libatrac9)) when you stay on a game, and its art moves slowly in the background. Both can be turned off in *Settings*.
+
+## Saves and space
+
+- Saves and trophies are kept per user. *Y* on a user: **Export saves and trophies (zip)** and **Import** (what was there is backed up first in `users\<id>\backups`).
+- *Settings* > **Save backup to a synced folder**: pick your OneDrive or Google Drive folder and every game session copies that user's saves there (`AnyPS5 Console\<user id>`). *Restore from the backup folder* on the user brings them back on another PC.
+- *Settings* > **Free up space**: deletes converted games of versions you no longer have, of games no longer in your folder, of versions you are not using, or all. Saves are never deleted; a game is converted again when you play it.
+
 ## Where things are
 
 | What | Installer | Portable |
@@ -93,6 +114,7 @@ Paths and user names are removed from the log before sending.
 | Last game log | `last_run.log` in the converted game folder (*Options* > *Open converted folder*) | |
 | Function report | `audit.txt` in the converted game folder | |
 | Reports not sent yet | `compat\pending\` in the data folder | |
+| Saves and trophies per user | `users\<id>\saves`, `users\<id>\trophies` in the data folder | |
 | Crash report of the console | `crash.log` in the data folder | |
 
 ## Guía rápida (Español)
@@ -104,7 +126,8 @@ Paths and user names are removed from the log before sending.
 5. Elige un juego y pulsa A. La primera vez se convierte y se revisan sus funciones; luego abre en pantalla completa y vuelves a la consola al cerrarlo. El botón Guide abre el menú rápido durante el juego.
 6. *Ajustes* > *Versión de AnyPS5* para cambiar entre las versiones instaladas. *Actualizaciones* > *Actualizar todo* actualiza todas en segundo plano.
 7. Juegos de PC: Steam y Epic se detectan solos; tus carpetas o `.exe` se añaden en *Ajustes* > *Juegos PC*.
-8. Cada partida se reporta a la [lista de compatibilidad](https://techx3.github.io/AnyPS5-Compat/): estado, versión de AnyPS5, funciones que faltan, errores del log y capturas a los 2 y 10 minutos, sin rutas ni nombres de usuario. Se desactiva en *Ajustes* > *Reportes de compatibilidad*.
+8. *Y* sobre un juego: **Perfil del juego** (versión de AnyPS5, variables `APS5_*`, argumentos del relinker solo para ese juego), **Trofeos**, PRs que le ayudarían. *Y* sobre un usuario: exportar o importar sus saves. *Ajustes*: copia de saves en OneDrive/Google Drive y **Liberar espacio**.
+9. Cada partida se reporta a la [lista de compatibilidad](https://techx3.github.io/AnyPS5-Compat/): estado, versión de AnyPS5, funciones que faltan, errores del log y capturas a los 2 y 10 minutos, sin rutas ni nombres de usuario. Se desactiva en *Ajustes* > *Reportes de compatibilidad*.
 
 ## Features
 
@@ -115,11 +138,14 @@ Paths and user names are removed from the log before sending.
 - Compatibility reports to the public list, with screenshots.
 - Fullscreen games with aspect ratio kept, ultrawide included; quick menu with the Guide button.
 - Languages: English, 中文, हिन्दी, Español, Français, العربية. The game language follows the console language or can be set separately.
-- Self-update, background music (can be turned off).
+- Compatibility icon on each cover, AnyPS5 pull requests that help your games.
+- Game profiles, trophies per user, save export/import and synced backup, free-space cleanup.
+- Game theme music (ATRAC9) and animated backgrounds.
+- Self-update, background music (can be turned off). Experimental Linux / Steam Deck AppImage.
 
 ## Requirements
 
-- Windows 10/11 x64 with a Vulkan GPU driver.
+- Windows 10/11 x64 with a Vulkan GPU driver (or Linux x86_64 for the experimental AppImage).
 - Stable version: nothing else.
 - Repository version and forks: Git, CMake, Ninja and MinGW-w64 GCC 15.2.0 (WinLibs `x86_64-ucrt-posix-seh`). The console can download them. An existing build of your own (any generator or compiler) is reused.
 
@@ -147,7 +173,7 @@ Data goes to `data/` next to `src/`.
 
 ## Build
 
-GitHub Actions (`.github/workflows/build.yml`) builds the executable with PyInstaller, the portable zip and the Inno Setup installer on every push. Pushing a tag `vX.Y.Z` publishes them as a release.
+GitHub Actions (`.github/workflows/build.yml`) builds the executable with PyInstaller, the portable zip, the Inno Setup installer and the Linux AppImage on every push. `native/atrac9.dll` is LibAtrac9 built with `x86_64-w64-mingw32-gcc` (see `native/libatrac9`). Pushing a tag `vX.Y.Z` publishes them as a release.
 
 ## License
 

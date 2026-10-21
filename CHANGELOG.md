@@ -4,7 +4,27 @@ Release notes for AnyPS5 Console. The section of each version is the description
 
 ## Unreleased
 
-_No changes yet._
+**Per game**
+- Compatibility icon on every cover: *Works*, *Boots* or *Doesn't load*, from your last session or, before playing, from the function check.
+- Game profiles: AnyPS5 version, `APS5_*` variables and extra relinker arguments for one game only.
+- Trophies: list of the game's trophies with icons, grade and unlock date, per user. Trophy count on the home screen.
+- *View in the compatibility list* opens the game on the public page.
+
+**AnyPS5 pull requests**
+- The console tells you when an open AnyPS5 PR implements functions your games are missing (*Menu > PRs for your games* and on each game). The compatibility page links those PRs in *Most needed functions*.
+
+**Saves and space**
+- Export and import a user's saves and trophies as a zip (previous data is backed up first).
+- Automatic save backup to a synced folder (OneDrive, Google Drive) after every session, and restore on another PC.
+- *Free up space*: delete converted games of old versions, removed games, versions not in use, or all. Saves are never deleted.
+
+**Home screen**
+- The selected game's theme music plays (`snd0.at9`, ATRAC9 decoded with LibAtrac9), with the background music lowered.
+- Animated game backgrounds with a crossfade between games. Both can be turned off in *Settings*.
+
+**Other**
+- Experimental Linux / Steam Deck AppImage (builds AnyPS5 main or forks locally).
+- Settings and lists no longer draw over the top bar when scrolled.
 
 ## v1.1.6
 

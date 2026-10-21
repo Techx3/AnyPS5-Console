@@ -311,6 +311,17 @@ def app_update(check, data_dir, exe_dir, portable, log):
     import tempfile
     tag = check["remote"]
     work = Path(tempfile.mkdtemp(prefix="anyps5console-"))
+    appimage = os.environ.get("APPIMAGE", "")
+    if appimage:
+        name = next((n for n in check["assets"] if n.endswith("x86_64.AppImage")), None)
+        if not name:
+            raise RuntimeError(f"{tag}: AppImage not found")
+        new = Path(appimage + ".new")
+        _download(check["assets"][name], new, log)
+        new.chmod(0o755)
+        os.replace(new, appimage)
+        subprocess.Popen([appimage], start_new_session=True)
+        return True
     if portable:
         name = next((n for n in check["assets"] if n.endswith("-portable.zip")), None)
         if not name:

@@ -39,7 +39,7 @@ jobs:
       - name: Build executable
         run: >
           pyinstaller --noconfirm --clean --windowed --name AnyPS5Console
-          --icon src/assets/anyps5.ico --add-data "src/assets;assets" --paths src
+          --icon src/assets/anyps5.ico --add-data "src/assets;assets" --add-binary "native/atrac9.dll;native" --paths src
           --collect-submodules pygame src/main.py
 
       - name: Portable zip
@@ -70,3 +70,61 @@ jobs:
           files: |
             AnyPS5Console-*-portable.zip
             installer/Output/*.exe
+
+  linux:
+    # Experimental AppImage (Linux desktop / Steam Deck). On Linux, AnyPS5 main and forks are built locally.
+    needs: windows
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            v="${{ github.ref_name }}"; v="${v#[vV]}"; v="${v#.}"
+            sed -i "s/^VERSION = \".*\"/VERSION = \"$v\"/" src/paths.py
+          else
+            v="0.0.0-dev"
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build LibAtrac9
+        run: gcc -O2 -shared -fPIC -o native/libatrac9.so native/libatrac9/src/*.c -lm
+
+      - name: Build executable
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name AnyPS5Console
+          --add-data "src/assets:assets" --add-binary "native/libatrac9.so:native" --paths src
+          --collect-submodules pygame src/main.py
+
+      - name: AppImage
+        run: |
+          set -e
+          mkdir -p AppDir/usr/bin
+          cp -r dist/AnyPS5Console/* AppDir/usr/bin/
+          cp src/assets/anyps5_icon_512.png AppDir/anyps5console.png
+          printf '[Desktop Entry]\nType=Application\nName=AnyPS5 Console\nExec=AnyPS5Console\nIcon=anyps5console\nCategories=Game;\n' > AppDir/anyps5console.desktop
+          printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/AnyPS5Console" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir "AnyPS5Console-${{ steps.version.outputs.value }}-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnyPS5Console-${{ steps.version.outputs.value }}-linux
+          path: AnyPS5Console-*-x86_64.AppImage
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AnyPS5Console-*-x86_64.AppImage

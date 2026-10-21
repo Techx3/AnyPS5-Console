@@ -1,4 +1,5 @@
 import json
+import urllib.request
 import math
 import os
 import queue
@@ -22,6 +23,8 @@ import winfs  # noqa: E402
 import i18n  # noqa: E402
 import procs  # noqa: E402
 import compat  # noqa: E402
+import at9  # noqa: E402
+import trophies as troph  # noqa: E402
 
 procs.install()
 import ambient as amb  # noqa: E402
@@ -154,6 +157,7 @@ class Console:
         self.running = True
         self.pc_games = []
         self.audits = {}
+        self.game_status = self.load_game_status()
         self.audit_view = None
         self.pc_sel = 0
         self.pc_scroll = 0.0
@@ -216,7 +220,8 @@ class Console:
 
     def setup_install_menu(self):
         self.open_menu(self.tr("¿Qué versión quieres usar?"), [
-            ("Estable (release): recomendada, no hay que compilar", lambda: self.setup_install("release")),
+            *([("Estable (release): recomendada, no hay que compilar", lambda: self.setup_install("release"))]
+              if os.name == "nt" else []),
             ("Main oficial: lo último, se compila en tu PC", lambda: self.setup_install("repo")),
             ("Un fork (enlace de GitHub)", lambda: self.setup_install("fork")),
             ("Volver", self.setup_menu)])
@@ -364,7 +369,9 @@ class Console:
         return next((f for f in self.forks() if f["name"] == name), None)
 
     def channels(self):
-        return ["repo", "release"] + ["fork:" + f["name"] for f in self.forks()]
+        # AnyPS5 releases only ship Windows binaries: on Linux, main and forks are built locally
+        base = ["repo", "release"] if os.name == "nt" else ["repo"]
+        return base + ["fork:" + f["name"] for f in self.forks()]
 
     def channel_name(self, ch=None):
         ch = ch or self.conf["channel"]
@@ -532,6 +539,54 @@ class Console:
     def load_user_stats(self):
         self.stats = userlib.load_stats(self.users.base, self.user["id"]) if self.user else {}
 
+    # ------------------------------------------------------------ compatibility per game (local)
+    def load_game_status(self):
+        try:
+            return json.loads((HERE / "game_status.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def set_game_status(self, game, channel, status, crashed=False):
+        self.game_status[game.key] = {"status": status, "channel": channel or self.conf["channel"],
+                                      "crashed": bool(crashed), "time": int(time.time())}
+        try:
+            (HERE / "game_status.json").write_text(json.dumps(self.game_status, indent=1), "utf-8")
+        except OSError:
+            pass
+
+    def compat_of(self, game):
+        """('works'|'boots'|'fails', text) from the last session, else from the function check; None if unknown."""
+        if getattr(game, "platform", "PS5") == "PC":
+            return None
+        st = self.game_status.get(game.key)
+        if st:
+            where = self.tr(self.channel_name(st.get("channel")))
+            if st["status"] == "playable":
+                return "works", f"Funciona ({where})"
+            if st["status"] in ("ingame", "boots"):
+                return "boots", ("Arranca, se cerró con error" if st.get("crashed") else "Arranca") + f" ({where})"
+            return "fails", ("No convierte" if st["status"] == "convert" else "No carga") + f" ({where})"
+        a = self.audits.get(game.key)
+        if a and (a["absent"] or a["missing_libs"]):
+            return "fails", f"Probablemente no carga: le faltan {a['absent'] + a['missing_libs']} funciones"
+        return None
+
+    def draw_compat_icon(self, kind, center, r):
+        color = {"works": GOOD, "boots": (240, 190, 90), "fails": BAD}[kind]
+        cx, cy = center
+        pygame.draw.circle(self.screen, (12, 16, 22), center, r + 3)
+        pygame.draw.circle(self.screen, color, center, r)
+        w = max(2, r // 4)
+        ink = (12, 16, 22)
+        if kind == "works":
+            pygame.draw.lines(self.screen, ink, False, [(cx - r * 0.45, cy), (cx - r * 0.1, cy + r * 0.38), (cx + r * 0.5, cy - r * 0.38)], w)
+        elif kind == "boots":
+            pygame.draw.line(self.screen, ink, (cx - r * 0.45, cy), (cx + r * 0.45, cy), w)
+        else:
+            d = r * 0.4
+            pygame.draw.line(self.screen, ink, (cx - d, cy - d), (cx + d, cy + d), w)
+            pygame.draw.line(self.screen, ink, (cx - d, cy + d), (cx + d, cy - d), w)
+
     def record_play(self, game, seconds):
         if not self.user:
             return
@@ -585,8 +640,71 @@ class Console:
         games = [g for g in pcgames.scan_all(self.conf, HERE / "pc_icons256") if g.key not in hidden]
         self.q.put(("pc_games", games))
 
+    # ------------------------------------------------------------ AnyPS5 pull requests for your games
+    def task_prs(self):
+        try:
+            req = urllib.request.Request(compat.PAGE + "prs.json", headers={"User-Agent": "AnyPS5-Console"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                self.q.put(("prs", json.load(r).get("prs", [])))
+        except Exception:
+            pass
+
+    def pr_matches(self):
+        """[(pr, [(game, [functions])])] for open PRs that implement functions your games are missing."""
+        prs = getattr(self, "prs", None) or []
+        names = {g.key: g for g in self.games}
+        need = {}
+        for key, a in self.audits.items():
+            if key in names and a:
+                need[key] = {r.get("name") for r in a.get("records", []) if r.get("name")}
+        out = []
+        for pr in prs:
+            fns = set(pr.get("functions", []))
+            hits = [(names[k], sorted(fns & n)) for k, n in need.items() if fns & n]
+            if hits:
+                out.append((pr, hits))
+        return out
+
+    def notify_prs(self):
+        seen_path = HERE / "prs_seen.json"
+        try:
+            seen = json.loads(seen_path.read_text("utf-8"))
+        except (OSError, ValueError):
+            seen = {}
+        new = [(pr, hits) for pr, hits in self.pr_matches() if seen.get(str(pr["number"])) != pr.get("head")]
+        if new:
+            pr, hits = new[0]
+            games = ", ".join(g.name for g, _ in hits[:2])
+            more = f" (+{len(new) - 1} PR)" if len(new) > 1 else ""
+            self.toast = (f"PR #{pr['number']} implementa funciones que le faltan a {games}{more}  ·  Menú > PRs para tus juegos",
+                          time.time() + 12)
+            for p, _ in new:
+                seen[str(p["number"])] = p.get("head")
+            try:
+                seen_path.write_text(json.dumps(seen), "utf-8")
+            except OSError:
+                pass
+
+    def prs_menu(self, game=None):
+        items = []
+        for pr, hits in self.pr_matches():
+            if game is not None:
+                hits = [(g, f) for g, f in hits if g.key == game.key]
+                if not hits:
+                    continue
+            who = ", ".join(g.name for g, _ in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+            nfun = len({x for _, f in hits for x in f})
+            items.append((f"#{pr['number']} {pr['title'][:60]}  ·  {nfun} func.  ·  {who}",
+                          lambda u=pr["url"]: self.open_url(u)))
+        if not items:
+            self.toast = ("Ningún PR abierto implementa funciones que les falten a tus juegos", time.time() + 5)
+            return
+        items.append(("Cerrar", None))
+        self.open_menu(self.tr("PRs de AnyPS5 para tus juegos"), items)
+
     def task_check_updates(self):
         self.task_check_app()
+        self.task_prs()
         checks = [("repo", lambda: updater.repo_check(self.anyps5_root())), ("release", lambda: updater.release_check(REL_DIR))]
         for f in list(self.forks()):
             checks.append(("fork:" + f["name"], lambda f=f: updater.fork_check(self.fork_dir(f["name"]), f)))
@@ -599,6 +717,8 @@ class Console:
 
     def require_tools(self):
         st = updater.tools_status(paths.TOOLS)
+        if not (st["git"] and st["mingw"]) and os.name != "nt":
+            raise RuntimeError("Faltan git, cmake, ninja, gcc o g++: instálalos con el gestor de paquetes de tu sistema.")
         if not (st["git"] and st["mingw"]):
             raise RuntimeError("Faltan herramientas de compilación (Git y MinGW). Instálalas en Actualizaciones.")
 
@@ -652,13 +772,20 @@ class Console:
         rel = core.find_relinker(cfg)
         if rel and audit.supports_registry(rel):
             cfg["extra_args"] = (cfg.get("extra_args", "") + " --registry").strip()
+        prof = self.profile(game)
+        if prof.get("args"):
+            cfg["extra_args"] = (cfg.get("extra_args", "") + " " + prof["args"]).strip()
         try:
             exe = core.ensure_converted(game, cfg, self.log, force=force)
+            if prof.get("reconvert"):
+                self.profile(game, True).pop("reconvert", None)
+                self.save_profile(game)
         except procs.Cancelled:
             raise
         except Exception as e:
             # Only a failure of AnyPS5 itself is a compatibility result, not a missing build or tools.
             if not procs.cancel_event.is_set() and core.find_relinker(cfg):
+                self.set_game_status(game, channel, "convert")
                 self.report(game, channel, converted=False, error=str(e))
             raise
         result = None
@@ -675,14 +802,20 @@ class Console:
                 old = paths.CODE.parent / "launcher" / "cache"
                 legacy = [old / game.key / "_sd"] + sorted(old.glob(game.key + "-*/_sd"))
             userlib.bind_saves(exe.parent, self.users.save_dir(self.user["id"], game.key), legacy, self.log)
+            try:
+                userlib.bind_dir(exe.parent, "_trophy", self.users.trophy_dir(self.user["id"], game.key), self.log)
+            except Exception as e:
+                self.log(f"Trofeos: {e}")
             os.environ["APS5_USER_NAME"] = self.user["name"]
         os.environ["ANYPS5_LANGUAGE"] = str(self.game_language())
         if self.conf.get("game_fullscreen", True):
             os.environ["APS5_FULLSCREEN"] = "1"
         else:
             os.environ.pop("APS5_FULLSCREEN", None)
+        saved_env = {k: os.environ.get(k) for k in prof.get("env", {})}
+        os.environ.update(prof.get("env", {}))
         self.q.put(("launch",))
-        if self.conf.get("game_fullscreen", True):
+        if os.environ.get("APS5_FULLSCREEN", "0") not in ("", "0"):
             threading.Thread(target=winfs.fullscreen_when_ready, args=(str(exe.resolve()), getattr(self, "hwnd", None)),
                              daemon=True).start()
         self.game_exe = str(exe.resolve())
@@ -710,12 +843,24 @@ class Console:
             seen["t"] = 0.0
         shot_thread = threading.Thread(target=shooter, daemon=True)
         shot_thread.start()
-        rc = core.launch(exe, self.log)
+        try:
+            rc = core.launch(exe, self.log)
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
         done.set()
         shot_thread.join(timeout=15)
         played = time.time() - t0
         self.record_play(game, played)
+        self.sync_saves(game)
+        self.__dict__.pop("_trophy_sum", None)
         self.game_exe = None
+        self.set_game_status(game, channel, compat.status_of(True, seen.get("t"), played, rc,
+                                                             getattr(self, "closed_by_user", False)),
+                             crashed=compat.crashed(rc, getattr(self, "closed_by_user", False)))
         self.report(game, channel, converted=True, window_after=seen.get("t"), seconds=played, exit_code=rc,
                     audit_result=result, log_path=exe.parent / "last_run.log", shots=shots)
         self.q.put(("ended", rc, str(exe.parent / "last_run.log")))
@@ -1029,6 +1174,8 @@ class Console:
 
     def update_channel(self, ch, log):
         if ch == "tools":
+            if os.name != "nt":
+                raise RuntimeError("Instala git, cmake, ninja, gcc y g++ con el gestor de paquetes de tu sistema.")
             updater.install_tools(paths.TOOLS, log)
             paths.setup_environment()
             return
@@ -1099,6 +1246,10 @@ class Console:
             ctypes.windll.user32.SetForegroundWindow(hwnd)
 
     def poll_queue(self):
+        due = getattr(self, "_prs_due", 0)
+        if due and time.time() > due and getattr(self, "prs", None):
+            self._prs_due = 0
+            self.notify_prs()
         while True:
             try:
                 msg = self.q.get_nowait()
@@ -1114,6 +1265,7 @@ class Console:
             elif kind == "audit":
                 if msg[2] is not None:
                     self.audits[msg[1]] = msg[2]
+                    self._prs_due = time.time() + 3
             elif kind == "show_audit":
                 g = next((x for x in self.games if x.key == msg[1]), None)
                 self.audit_view = {"game": g, "data": msg[2], "scroll": 0, "blocked": msg[3]}
@@ -1130,6 +1282,13 @@ class Console:
                 self.device_code = (msg[1], msg[2]) if msg[1] else None
             elif kind == "toast":
                 self.toast = (msg[1], time.time() + 5)
+            elif kind == "prs":
+                self.prs = msg[1]
+                self._prs_due = time.time() + 3
+            elif kind == "cache_sizes":
+                self.cleanup_menu(msg[1])
+            elif kind == "theme_ready":
+                self.play_theme(msg[1], msg[2])
             elif kind == "music_ready":
                 self.music_path = msg[1]
             elif kind == "app_update":
@@ -1226,10 +1385,292 @@ class Console:
             if ch != self.conf["channel"]:
                 items.append((f"Jugar con {self.channel_name(ch)}", lambda ch=ch: self.play(g, channel=ch)))
         items.append(("Funciones del sistema (qué le falta)", lambda: self.show_audit(g)))
+        ts = self.trophy_summary(g)
+        if ts:
+            items.append((f"Trofeos ({ts[0]}/{ts[1]})", lambda: self.open_trophies(g)))
+        nprs = sum(1 for _, hits in self.pr_matches() if any(x.key == g.key for x, _ in hits))
+        if nprs:
+            items.append((f"PRs que le ayudarían ({nprs})", lambda: self.prs_menu(g)))
+        items.append(("Perfil del juego…", lambda: self.profile_menu(g)))
+        items.append(("Ver en la lista de compatibilidad", lambda: self.open_url(
+            compat.PAGE + "?q=" + (g.title_id or g.key))))
         items += [("Abrir carpeta convertida", lambda: self.open_folder(Path(self.core_cfg()["cache_dir"]) / g.key)),
                   ("Abrir carpeta del juego", lambda: self.open_folder(g.path)),
                   ("Cerrar", None)]
         self.open_menu(g.name, items)
+
+    # ------------------------------------------------------------ per-game profiles
+    def profile(self, game, create=False):
+        profs = self.conf.setdefault("profiles", {}) if create else self.conf.get("profiles", {})
+        if create:
+            return profs.setdefault(game.key, {})
+        return profs.get(game.key, {})
+
+    def save_profile(self, game):
+        p = self.conf.get("profiles", {}).get(game.key)
+        if p is not None and not any(p.get(k) for k in ("channel", "env", "args", "reconvert")):
+            self.conf["profiles"].pop(game.key, None)
+        save_conf(self.conf)
+
+    def text_entry(self, title, initial, on_done, hint="", back="home"):
+        self.kb = {"name": initial, "r": 1, "c": 0, "mode": "text", "title": title, "hint": hint,
+                   "on_done": on_done, "back_state": back}
+        self.go("newuser")
+
+    def profile_menu(self, g):
+        p = self.profile(g)
+        ch = p.get("channel")
+        env = p.get("env", {})
+        items = [
+            (f"Versión de AnyPS5: {self.tr(self.channel_name(ch)) if ch else self.tr('la general')}",
+             lambda: self.profile_channel_menu(g)),
+            (f"Variables APS5: {len(env)}", lambda: self.profile_env_menu(g)),
+            (f"Argumentos extra: {p.get('args') or self.tr('ninguno')}", lambda: self.text_entry(
+                self.tr("Argumentos extra del relinker"), p.get("args", ""), lambda t: self.set_profile_args(g, t),
+                "Se usan al convertir este juego; se reconvierte la próxima vez que lo juegues.")),
+        ]
+        if p:
+            items.append(("Restablecer perfil", lambda: self.reset_profile(g)))
+        items.append(("Cerrar", None))
+        self.open_menu(f"{self.tr('Perfil')}: {g.name}", items)
+
+    def profile_channel_menu(self, g):
+        items = [("La general", lambda: self.set_profile_channel(g, None))]
+        for ch in self.channels():
+            if self.channel_ready(ch):
+                items.append((self.tr(self.channel_name(ch)), lambda ch=ch: self.set_profile_channel(g, ch)))
+        items.append(("Volver", lambda: self.profile_menu(g)))
+        self.open_menu(self.tr("Versión de AnyPS5"), items)
+
+    def set_profile_channel(self, g, ch):
+        p = self.profile(g, True)
+        if ch:
+            p["channel"] = ch
+        else:
+            p.pop("channel", None)
+        self.save_profile(g)
+        self.profile_menu(g)
+
+    def profile_env_menu(self, g):
+        env = self.profile(g).get("env", {})
+        items = [(f"{k}={v}  ·  quitar", lambda k=k: self.remove_profile_env(g, k)) for k, v in sorted(env.items())]
+        items.append(("Añadir variable…", lambda: self.text_entry(
+            self.tr("Variable para este juego"), "APS5_", lambda t: self.add_profile_env(g, t),
+            "NOMBRE=valor, por ejemplo APS5_FULLSCREEN=0")))
+        items.append(("Volver", lambda: self.profile_menu(g)))
+        self.open_menu(self.tr("Variables APS5"), items)
+
+    def add_profile_env(self, g, text):
+        k, sep, v = text.strip().partition("=")
+        k = k.strip()
+        if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+            self.toast = ("Escribe NOMBRE=valor", time.time() + 5)
+            return
+        self.profile(g, True).setdefault("env", {})[k] = v.strip()
+        self.save_profile(g)
+        self.profile_env_menu(g)
+
+    def remove_profile_env(self, g, k):
+        p = self.profile(g, True)
+        p.get("env", {}).pop(k, None)
+        if not p.get("env"):
+            p.pop("env", None)
+        self.save_profile(g)
+        self.profile_env_menu(g)
+
+    def set_profile_args(self, g, text):
+        p = self.profile(g, True)
+        text = text.strip()
+        if text != p.get("args", ""):
+            p["reconvert"] = True
+        if text:
+            p["args"] = text
+        else:
+            p.pop("args", None)
+        self.save_profile(g)
+        self.profile_menu(g)
+
+    def reset_profile(self, g):
+        had_args = bool(self.profile(g).get("args"))
+        self.conf.get("profiles", {}).pop(g.key, None)
+        if had_args:
+            self.profile(g, True)["reconvert"] = True
+        self.save_profile(g)
+        self.toast = ("Perfil restablecido", time.time() + 4)
+
+    # ------------------------------------------------------------ trophies
+    def trophy_folder(self, g):
+        if not self.user:
+            return None
+        mine = self.users.trophy_dir(self.user["id"], g.key)
+        if not userlib.has_files(mine):
+            # trophies won before per-user trophies existed stay in the converted game until it is played again
+            old = Path(self.core_cfg()["cache_dir"]) / g.key / "_trophy"
+            if old.is_dir() and not userlib.is_link(old) and userlib.has_files(old):
+                return old
+        return mine
+
+    def trophy_summary(self, g):
+        cache = self.__dict__.setdefault("_trophy_sum", {})
+        uid = self.user["id"] if self.user else ""
+        k = (uid, g.key)
+        if k not in cache:
+            cache[k] = troph.summary(g.path, self.trophy_folder(g)) if self.user else None
+        return cache[k]
+
+    def open_trophies(self, g):
+        try:
+            pkg = troph.load(g.path, self.game_language())
+        except Exception as e:
+            self.toast = (f"Trofeos: {e}", time.time() + 5)
+            return
+        self.trophy_view = {"game": g, "pkg": pkg, "got": troph.unlocks(self.trophy_folder(g)), "scroll": 0}
+        self.state = "trophies"
+
+    def trophy_icon(self, data, size, locked):
+        key = ("trop", hash(data), size, locked)
+        if key not in self.images:
+            img = None
+            try:
+                import io
+                img = pygame.transform.smoothscale(pygame.image.load(io.BytesIO(data)).convert_alpha(), (size, size))
+                if locked:
+                    img = pygame.transform.grayscale(img)
+                    img.set_alpha(110)
+            except Exception:
+                img = None
+            self.images[key] = img
+        return self.images[key]
+
+    def draw_trophies(self):
+        v = self.trophy_view
+        g, pkg, got = v["game"], v["pkg"], v["got"]
+        self.draw_background(g)
+        self.draw_topbar()
+        tro = pkg["trophies"] if pkg else []
+        n = sum(1 for t in tro if t["id"] in got)
+        self.text(f"Trofeos · {g.name}", 46, TEXT, (110, 120), bold=True, maxw=W - 220)
+        bar = pygame.Rect(110, 190, min(900, W - 220), 12)
+        pygame.draw.rect(self.screen, (50, 56, 68), bar, border_radius=6)
+        if tro:
+            fill = bar.copy()
+            fill.width = max(12, int(bar.width * n / len(tro)))
+            pygame.draw.rect(self.screen, ACCENT, fill, border_radius=6)
+        self.text(f"{n}/{len(tro)}  ·  {int(100 * n / max(1, len(tro)))}%", 26, TEXT, (bar.right + 24, bar.centery), anchor="midleft")
+        colors = {"platinum": (170, 200, 230), "gold": (230, 190, 80), "silver": (190, 196, 205), "bronze": (200, 130, 80)}
+        names = {"platinum": "Platino", "gold": "Oro", "silver": "Plata", "bronze": "Bronce"}
+        y0, row = 240, 104
+        visible = max(1, (H - 140 - y0) // row)
+        panel = pygame.Surface((W - 160, visible * row + 20), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (10, 14, 20, 200), panel.get_rect(), border_radius=16)
+        self.screen.blit(panel, (80, y0 - 10))
+        v["scroll"] = max(0, min(v["scroll"], len(tro) - visible))
+        y = y0
+        for t in tro[v["scroll"]:v["scroll"] + visible]:
+            have = t["id"] in got
+            ic = self.trophy_icon(t["icon"], 84, not have) if t["icon"] else None
+            if ic:
+                self.screen.blit(ic, (110, y))
+            else:
+                pygame.draw.rect(self.screen, (40, 46, 58), pygame.Rect(110, y, 84, 84), border_radius=10)
+            hidden = t["hidden"] and not have
+            name = "Trofeo oculto" if hidden else t["name"]
+            self.text(name, 30, TEXT if have else DIM, (220, y + 6), bold=have, maxw=W - 640)
+            if not hidden:
+                self.text(t["detail"], 24, DIM, (220, y + 46), maxw=W - 640)
+            pygame.draw.circle(self.screen, colors[t["grade"]], (W - 380, y + 26), 10)
+            self.text(names[t["grade"]], 24, colors[t["grade"]], (W - 360, y + 26), anchor="midleft")
+            if have:
+                self.text(got[t["id"]].strftime("%d/%m/%Y"), 22, DIM, (W - 360, y + 58), anchor="midleft")
+            y += row
+        hints = [("B", "Volver")]
+        if len(tro) > visible:
+            hints.insert(0, ("↕", "Desplazar"))
+        self.draw_hints(hints)
+
+    # ------------------------------------------------------------ free space
+    @staticmethod
+    def dir_size(p):
+        total = 0
+        stack = [Path(p)]
+        while stack:
+            d = stack.pop()
+            try:
+                for e in os.scandir(d):
+                    if e.is_dir(follow_symlinks=False):
+                        if not userlib.is_link(e.path):
+                            stack.append(Path(e.path))
+                    elif e.is_file(follow_symlinks=False):
+                        total += e.stat(follow_symlinks=False).st_size
+            except OSError:
+                pass
+        return total
+
+    def task_cache_sizes(self):
+        root = HERE / "cache"
+        chans = {c.replace(":", "-") for c in self.channels()}
+        cur = self.conf["channel"].replace(":", "-")
+        keys = {g.key for g in self.games}
+        groups = {"gone_versions": [], "gone_games": [], "other_versions": [], "all": []}
+        for cd in (root.iterdir() if root.is_dir() else []):
+            if not cd.is_dir():
+                continue
+            for gd in cd.iterdir():
+                if not gd.is_dir():
+                    continue
+                size = self.dir_size(gd)
+                item = (gd, size)
+                groups["all"].append(item)
+                if cd.name not in chans:
+                    groups["gone_versions"].append(item)
+                elif keys and gd.name.split("-")[0] not in keys and gd.name not in keys:
+                    groups["gone_games"].append(item)
+                elif cd.name != cur:
+                    groups["other_versions"].append(item)
+        self.q.put(("cache_sizes", groups))
+
+    def cleanup_menu(self, groups):
+        def gb(items):
+            return f"{sum(s for _, s in items) / 1024 ** 3:.1f} GB"
+        labels = [("gone_versions", "Versiones de AnyPS5 que ya no tienes"),
+                  ("gone_games", "Juegos que ya no están en tu carpeta"),
+                  ("other_versions", "Otras versiones que no estás usando"),
+                  ("all", "Todo (se reconvierten al jugar)")]
+        items = [(f"{self.tr(text)}  ·  {gb(groups[k])}", lambda k=k: self.worker(self.task_cleanup, groups[k]))
+                 for k, text in labels if groups[k]]
+        if not items:
+            self.toast = ("No hay juegos convertidos", time.time() + 4)
+            return
+        items.append(("Cerrar", None))
+        self.open_menu(self.tr("Liberar espacio"), items)
+
+    def task_cleanup(self, items):
+        import shutil
+        freed, skipped = 0, 0
+        for d, size in items:
+            if self.game_exe and str(d) in self.game_exe:
+                skipped += 1
+                continue
+            keep = False
+            for name in ("_sd", "_trophy"):
+                p = d / name
+                if userlib.is_link(p):
+                    userlib.unlink_dir(p)  # only the link; the saves stay in the user folder
+                elif p.exists() and userlib.has_files(p):
+                    keep = True  # saves not moved to a user yet: never delete them
+            if keep:
+                skipped += 1
+                continue
+            try:
+                shutil.rmtree(d)
+                freed += size
+            except OSError:
+                skipped += 1
+        msg = f"Liberados {freed / 1024 ** 3:.1f} GB"
+        if skipped:
+            msg += f"  ·  {skipped} carpetas se conservaron (en uso o con saves)"
+        self.q.put(("toast", msg))
+        self.task_scan()
 
     def show_audit(self, g):
         data = self.audits.get(g.key)
@@ -1260,6 +1701,7 @@ class Console:
         items += [
             ("Cambiar de usuario", lambda: self.go("users")),
             ("Lista de compatibilidad", lambda: self.open_url(compat.PAGE)),
+            (f"PRs para tus juegos ({len(self.pr_matches())})", lambda: self.prs_menu()),
             ("Actualizaciones", lambda: setattr(self, "state", "updates")),
             ("Ajustes", lambda: setattr(self, "state", "settings")),
             ("Recargar juegos", self.rescan),
@@ -1288,14 +1730,27 @@ class Console:
         self.worker(self.task_scan_pc)
 
     def open_folder(self, path):
-        if os.name == "nt" and Path(path).exists():
-            os.startfile(str(path))
+        if Path(path).exists():
+            self.open_external(str(path))
+
+    @staticmethod
+    def open_external(target):
+        if os.name == "nt":
+            os.startfile(target)
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def play(self, game, force=False, channel=None, skip_audit=False):
+        if getattr(game, "platform", "PS5") != "PC":
+            prof = self.profile(game)
+            if channel is None and prof.get("channel") and prof["channel"] in self.channels():
+                channel = prof["channel"]
+            if prof.get("reconvert"):
+                force = True
         if getattr(game, "platform", "PS5") == "PC":
             if game.source in ("steam", "epic"):
-                if os.name == "nt":
-                    os.startfile(game.target)
+                self.open_external(str(game.target))
                 self.toast = (f"Abriendo {game.name} en {game.title_id}...", time.time() + 5)
                 return
             self.log_lines = []
@@ -1391,7 +1846,11 @@ class Console:
             ("Pantalla completa (consola)", "Sí" if c["fullscreen"] else "No", "fullscreen"),
             ("Juegos en pantalla completa", "Sí" if c.get("game_fullscreen", True) else "No", "game_fullscreen"),
             ("Buscar actualizaciones al iniciar", "Sí" if c["check_updates"] else "No", "check_updates"),
+            ("Copia de saves en carpeta sincronizada", c.get("sync_dir") or "No", "sync"),
+            ("Liberar espacio (juegos convertidos)", "", "cleanup"),
             ("Música de fondo", "Sí" if c.get("music", True) else "No", "music"),
+            ("Tema musical del juego seleccionado", "Sí" if c.get("game_theme", True) else "No", "game_theme"),
+            ("Fondo animado", "Sí" if c.get("bg_motion", True) else "No", "bg_motion"),
             ("Reportes de compatibilidad", self.compat_label(), "compat"),
             ("Volver", "", "back"),
         ]
@@ -1472,6 +1931,15 @@ class Console:
                 self.compat_menu()
             else:
                 self.set_compat(not c.get("compat"))
+        elif key == "sync" and step == 0:
+            self.sync_menu()
+        elif key == "cleanup" and step == 0:
+            self.toast = ("Calculando espacio…", time.time() + 3)
+            self.worker(self.task_cache_sizes)
+        elif key in ("game_theme", "bg_motion"):
+            c[key] = not c.get(key, True)
+            if key == "game_theme" and not c[key]:
+                self.stop_theme()
         elif key == "music":
             c["music"] = not c.get("music", True)
             self.set_music(True)
@@ -1617,6 +2085,10 @@ class Console:
                 items = [("Elegir imagen…", lambda: self.pick_avatar(u))]
                 if u.get("avatar"):
                     items.append(("Quitar imagen", lambda: self.set_avatar(u, None)))
+                items += [("Exportar saves y trofeos (zip)…", lambda: self.export_saves(u)),
+                          ("Importar saves y trofeos (zip)…", lambda: self.import_saves(u))]
+                if self.conf.get("sync_dir"):
+                    items.append(("Restaurar desde la carpeta de copia", lambda: self.restore_sync(u)))
                 items += [("Eliminar usuario (los saves se conservan)", lambda: self.delete_user(u["id"])), ("Cerrar", None)]
                 self.open_menu(u["name"], items)
             elif action == "back" and self.user:
@@ -1685,6 +2157,14 @@ class Console:
                 self.play(v["game"], skip_audit=True)
             elif action == "options" and v["game"] is not None:
                 self.open_folder(Path(self.core_cfg()["cache_dir"]) / v["game"].key)
+        elif st == "trophies":
+            v = self.trophy_view
+            if action == "up":
+                v["scroll"] = max(0, v["scroll"] - 1)
+            elif action == "down":
+                v["scroll"] += 1
+            elif action in ("back", "ok"):
+                self.state = "home"
         elif st == "bglog":
             if action in ("back", "ok"):
                 self.state = "updates"
@@ -1726,6 +2206,99 @@ class Console:
         self.users.save()
         self.images = {k: v for k, v in self.images.items() if k[0] != "avatar"}
 
+    # ------------------------------------------------------------ saves backup
+    def ask_save_file(self, title, name):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            f = filedialog.asksaveasfilename(title=title, initialfile=name, defaultextension=".zip",
+                                             filetypes=[("Zip", "*.zip")])
+            root.destroy()
+            return f
+        except Exception:
+            return ""
+
+    def ask_open_file(self, title, types):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            f = filedialog.askopenfilename(title=title, filetypes=types)
+            root.destroy()
+            return f
+        except Exception:
+            return ""
+
+    def export_saves(self, u):
+        f = self.ask_save_file(self.tr("Exportar saves"), f"AnyPS5 saves {u['name']} {time.strftime('%Y-%m-%d')}.zip")
+        if f:
+            self.worker(self.task_backup, "export", u, f)
+
+    def import_saves(self, u):
+        f = self.ask_open_file(self.tr("Importar saves"), [("Zip", "*.zip")])
+        if f:
+            self.worker(self.task_backup, "import", u, f)
+
+    def restore_sync(self, u):
+        self.worker(self.task_backup, "import", u, str(self.sync_root() / u["id"]))
+
+    def task_backup(self, kind, u, path):
+        try:
+            if kind == "export":
+                n = userlib.export_user(self.users.base, u["id"], path)
+                self.q.put(("toast", f"Saves exportados: {n} archivos"))
+            else:
+                if not Path(path).exists():
+                    raise RuntimeError("No hay copia en esa carpeta")
+                n = userlib.import_user(self.users.base, u["id"], path)
+                self.q.put(("toast", f"Saves importados: {n} archivos (lo anterior quedó en backups)"))
+        except Exception as e:
+            self.q.put(("toast", f"Saves: {e}"))
+
+    def sync_root(self):
+        return Path(self.conf["sync_dir"]) / "AnyPS5 Console"
+
+    def sync_saves(self, game):
+        if not (self.conf.get("sync_dir") and self.user):
+            return
+        try:
+            userlib.sync_game(self.users.base, self.user["id"], game.key, self.sync_root())
+            (self.sync_root() / self.user["id"] / "user.json").write_text(
+                json.dumps({"name": self.user["name"]}, ensure_ascii=False), "utf-8")
+        except Exception as e:
+            self.log(f"Copia de saves: {e}")
+
+    def sync_menu(self):
+        items = [("Elegir carpeta (OneDrive, Google Drive…)", self.pick_sync_dir)]
+        if self.conf.get("sync_dir"):
+            items.append(("Copiar ahora todos los saves", lambda: self.worker(self.task_sync_all)))
+            items.append(("Desactivar la copia", lambda: (self.conf.pop("sync_dir", None), save_conf(self.conf))))
+        items.append(("Cerrar", None))
+        self.open_menu(self.tr("Copia de saves"), items)
+
+    def pick_sync_dir(self):
+        d = self.ask_path("Carpeta sincronizada para los saves", True, self.conf.get("sync_dir") or None)
+        if d:
+            self.conf["sync_dir"] = d
+            save_conf(self.conf)
+            self.worker(self.task_sync_all)
+
+    def task_sync_all(self):
+        n = 0
+        for u in self.users.items:
+            saves = self.users.base / u["id"] / "saves"
+            for g in (saves.iterdir() if saves.is_dir() else []):
+                userlib.sync_game(self.users.base, u["id"], g.name, self.sync_root())
+                n += 1
+            if saves.is_dir():
+                (self.sync_root() / u["id"] / "user.json").write_text(json.dumps({"name": u["name"]}, ensure_ascii=False), "utf-8")
+        self.q.put(("toast", f"Copia de saves: {n} juegos copiados"))
+
     def delete_user(self, uid):
         self.users.remove(uid)
         if self.user and self.user["id"] == uid:
@@ -1733,7 +2306,7 @@ class Console:
         self.usel = 0
 
     def kb_layout(self):
-        if self.kb.get("mode") == "url":
+        if self.kb.get("mode") in ("url", "text"):
             rows = [list(r) if isinstance(r, str) else r for r in KEYBOARD_URL]
             if self.kb.get("upper"):
                 rows = [[k.upper() if len(k) == 1 else k for k in r] for r in rows]
@@ -1747,6 +2320,10 @@ class Console:
             self.go("home")
         elif self.kb.get("mode") == "url":
             self.finish_fork()
+        elif self.kb.get("mode") == "text":
+            kb = self.kb
+            self.go(kb.get("back_state", "home"))
+            kb["on_done"](kb["name"])
         else:
             self.finish_user()
 
@@ -1789,14 +2366,14 @@ class Console:
         elif action == "paste":
             self.paste()
         elif action == "back":
-            self.go({"url": "updates", "search": "home"}.get(kb.get("mode"), "users"))
+            self.go(kb.get("back_state") or {"url": "updates", "search": "home"}.get(kb.get("mode"), "users"))
         elif action == "ok":
             if kb["r"] < len(layout):
                 key = layout[kb["r"]][min(kb["c"], 9)]
                 if key == "Aa":
                     kb["upper"] = not kb.get("upper")
                 elif len(kb["name"]) < limit:
-                    if kb.get("mode") == "url":
+                    if kb.get("mode") in ("url", "text"):
                         kb["name"] += key
                     else:
                         kb["name"] += key if not kb["name"] or kb["name"][-1] == " " else key.lower()
@@ -1868,7 +2445,7 @@ class Console:
                 elif e.button == pygame.CONTROLLER_BUTTON_START:
                     self.keyboard_action("done")
                 elif e.button == pygame.CONTROLLER_BUTTON_Y:
-                    if self.kb.get("mode") == "url":
+                    if self.kb.get("mode") in ("url", "text"):
                         self.keyboard_action("paste")
                     else:
                         self.keyboard_action(None, " ")
@@ -1931,7 +2508,26 @@ class Console:
                         bg = self.image(p, (W, H), cover=True)
                         if bg:
                             break
-        if bg:
+        if bg and self.conf.get("bg_motion", True):
+            big = self.motion_image(bg)
+            t = time.time()
+            ox = int((big.get_width() - W) * (0.5 + 0.5 * math.sin(t * 0.045)))
+            oy = int((big.get_height() - H) * (0.5 + 0.5 * math.sin(t * 0.031 + 1.3)))
+            key = id(bg)
+            if key != getattr(self, "_bg_key", None):
+                self._bg_prev, self._bg_key, self._bg_since = getattr(self, "_bg_last", None), key, t
+            self._bg_last = (big, ox, oy)
+            prev = getattr(self, "_bg_prev", None)
+            k = min(1.0, (t - getattr(self, "_bg_since", 0)) / 0.5)
+            if prev and k < 1.0:
+                self.screen.blit(prev[0], (-prev[1], -prev[2]))
+                big.set_alpha(int(255 * k))
+                self.screen.blit(big, (-ox, -oy))
+                big.set_alpha(None)
+            else:
+                self.screen.blit(big, (-ox, -oy))
+            self.screen.blit(self.shade(), (0, 0))
+        elif bg:
             self.screen.blit(bg, (0, 0))
             self.screen.blit(self.shade(), (0, 0))
         else:
@@ -1939,6 +2535,67 @@ class Console:
             dim = pygame.Surface((W, H), pygame.SRCALPHA)
             dim.fill((0, 0, 0, 70))
             self.screen.blit(dim, (0, 0))
+
+    def motion_image(self, bg):
+        cache = self.__dict__.setdefault("_motion", {})
+        key = id(bg)
+        if key not in cache:
+            if len(cache) > 12:
+                cache.clear()
+            cache[key] = pygame.transform.smoothscale(bg, (int(W * 1.08), int(H * 1.08))).convert()
+        return cache[key]
+
+    # ------------------------------------------------------------ game theme (sce_sys/snd0.at9)
+    def update_theme(self):
+        game = self.cur_game() if self.state == "home" and not self.menu else None
+        key = game.key if game is not None and getattr(game, "platform", "PS5") != "PC" else None
+        th = self.__dict__.setdefault("theme", {"key": None, "since": 0, "playing": None})
+        if key != th["key"]:
+            self.stop_theme()
+            th.update(key=key, since=time.time(), requested=False)
+        if not key or not self.conf.get("game_theme", True) or th.get("requested") or time.time() - th["since"] < 1.2:
+            return
+        th["requested"] = True
+        src = game.path / "sce_sys" / "snd0.at9"
+        if src.is_file() and at9.available():
+            self.worker(self.task_theme, key, src)
+
+    def task_theme(self, key, src):
+        out = HERE / "themes" / f"{key}.wav"
+        try:
+            if not out.is_file():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                tmp = out.with_suffix(".tmp.wav")
+                at9.decode(src, tmp)
+                tmp.replace(out)
+            self.q.put(("theme_ready", key, str(out)))
+        except Exception:
+            pass
+
+    def play_theme(self, key, path):
+        th = getattr(self, "theme", None)
+        if not th or th["key"] != key or self.state != "home":
+            return
+        try:
+            snd = pygame.mixer.Sound(path)
+            snd.set_volume(0.55)
+            th["playing"] = snd.play(loops=-1, fade_ms=900)
+            th["sound"] = snd
+            if self.music_on:
+                pygame.mixer.music.set_volume(0.04)
+        except Exception:
+            th["playing"] = None
+
+    def stop_theme(self):
+        th = getattr(self, "theme", None)
+        if th and th.get("playing"):
+            try:
+                th["playing"].fadeout(500)
+                if self.music_on:
+                    pygame.mixer.music.set_volume(0.22)
+            except Exception:
+                pass
+            th["playing"] = None
 
     def avatar_image(self, user, radius):
         path = user.get("avatar") if user else None
@@ -2068,6 +2725,10 @@ class Console:
                 art.set_alpha(150)
             self.screen.blit(art, (x, yy))
             self.badge(getattr(g, "platform", "PS5"), (x + 8, yy + 8), 16 if size < 200 else 20)
+            c = self.compat_of(g)
+            if c:
+                r = 13 if size < 200 else 17
+                self.draw_compat_icon(c[0], (x + size - r - 8, yy + size - r - 8), r)
             if selected:
                 pygame.draw.rect(self.screen, TEXT, pygame.Rect(x, yy, size, size).inflate(12, 12), 4, border_radius=16)
 
@@ -2107,6 +2768,13 @@ class Console:
                 elif a:
                     meta += "   ·   funciones completas"
             r = self.badge(getattr(game, "platform", "PS5"), (82, info_y + 84), 22)
+            c = self.compat_of(game)
+            if c:
+                self.draw_compat_icon(c[0], (r.right + 30, r.centery), 14)
+                t = self.text(c[1], 28, {"works": GOOD, "boots": (240, 190, 90), "fails": BAD}[c[0]], (r.right + 54, r.centery),
+                              anchor="midleft", maxw=700)
+                r = pygame.Rect(t.right - 16 + 30, r.y, 0, r.h)
+                meta = "·   " + re.sub(r"   ·   le faltan \d+ funciones", "", meta)
             self.text(meta, 28, color, (r.right + 16, r.centery), anchor="midleft", maxw=W - r.right - 120)
             play = pygame.Rect(80, info_y + 140, 300, 80)
             pygame.draw.rect(self.screen, TEXT, play, border_radius=40)
@@ -2119,6 +2787,9 @@ class Console:
                 extra.append(f"Jugado {userlib.format_duration(st['time'])}")
             if st.get("last"):
                 extra.append(f"Última vez: {time.strftime('%d/%m/%Y', time.localtime(st['last']))}")
+            ts = self.trophy_summary(game) if getattr(game, "platform", "PS5") != "PC" else None
+            if ts and ts[0]:
+                extra.append(f"Trofeos {ts[0]}/{ts[1]}")
             if extra:
                 self.text("   ·   ".join(extra), 26, DIM, (play.right + 30, play.centery), anchor="midleft", maxw=W - play.right - 120)
             idx = self.pc_sel if self.row_i == 1 else self.sel
@@ -2136,7 +2807,6 @@ class Console:
         target = max(0, sel_bottom - (H - 120))
         self.list_off = getattr(self, "list_off", 0) + (target - getattr(self, "list_off", 0)) * 0.3
         off = int(self.list_off)
-        self.draw_topbar()
         self.text(title, 56, TEXT, (120, 150 - off), bold=True)
         y = 260 - off
         if extra:
@@ -2157,6 +2827,12 @@ class Console:
         for i in range(120):
             band.fill((8, 10, 14, min(250, i * 7)), (0, i, W, 1))
         self.screen.blit(band, (0, H - 120))
+        if off > 0:
+            top = pygame.Surface((W, 140), pygame.SRCALPHA)
+            for i in range(140):
+                top.fill((8, 10, 14, 240 if i < 100 else max(0, 240 - (i - 100) * 6)), (0, i, W, 1))
+            self.screen.blit(top, (0, 0))
+        self.draw_topbar()
         self.draw_hints([("A", "Elegir"), ("B", "Volver")])
 
     def draw_updates_info(self, y):
@@ -2422,12 +3098,14 @@ class Console:
         dim = pygame.Surface((W, H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 120))
         self.screen.blit(dim, (0, 0))
-        url = self.kb.get("mode") == "url"
+        url = self.kb.get("mode") in ("url", "text")
         layout, actions, limit = self.kb_layout()
-        title = {"url": "Añadir fork de AnyPS5", "search": "Buscar juego"}.get(self.kb.get("mode"), "Crear usuario")
+        title = self.kb.get("title") or {"url": "Añadir fork de AnyPS5", "search": "Buscar juego"}.get(self.kb.get("mode"), "Crear usuario")
         self.text(title, 52, TEXT, (W // 2, 140), bold=True, anchor="center")
-        if url:
-            self.text("Enlace del repositorio. Para una rama: …/tree/rama o enlace#rama", 24, DIM, (W // 2, 200), anchor="center")
+        hint = self.kb.get("hint") or ("Enlace del repositorio. Para una rama: …/tree/rama o enlace#rama"
+                                       if self.kb.get("mode") == "url" else "")
+        if hint:
+            self.text(hint, 24, DIM, (W // 2, 200), anchor="center", maxw=W - 200)
         fw = 1200 if url else 840
         field = pygame.Rect(W // 2 - fw // 2, 230, fw, 90)
         pygame.draw.rect(self.screen, (30, 34, 42), field, border_radius=14)
@@ -2518,6 +3196,8 @@ class Console:
             self.draw_busy()
         elif st == "bglog":
             self.draw_bglog()
+        elif st == "trophies":
+            self.draw_trophies()
         elif st == "playing":
             self.draw_playing()
         elif st == "audit":
@@ -2550,6 +3230,7 @@ class Console:
             self.read_events()
             self.poll_queue()
             self.set_music(self.state not in ("boot", "playing"))
+            self.update_theme()
             if self.state == "playing":
                 self.draw()
                 clock.tick(30 if self.menu else 5)

@@ -52,6 +52,9 @@ class Users:
     def save_dir(self, uid, game_key):
         return self.base / uid / "saves" / game_key
 
+    def trophy_dir(self, uid, game_key):
+        return self.base / uid / "trophies" / game_key
+
 
 def is_link(p):
     p = Path(p)
@@ -108,6 +111,94 @@ def bind_saves(out, target, legacy, log):
                 log(f"Saves importados de {old}")
                 break
     make_link(sd, target)
+
+
+def bind_dir(out, name, target, log):
+    """Point out/<name> at target (per-user folder), moving what the game already wrote there the first time."""
+    out, target = Path(out), Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    link = out / name
+    if is_link(link):
+        unlink_dir(link)
+    elif link.exists():
+        if has_files(link) and not has_files(target):
+            shutil.copytree(link, target, dirs_exist_ok=True)
+            shutil.rmtree(link)
+            log(f"{name} existente movido al usuario.")
+        else:
+            link.rename(out / f"{name}.bak-{int(time.time())}")
+    make_link(link, target)
+
+
+# ---------------------------------------------------------------- backup of a user's saves
+def export_user(base, uid, zip_path):
+    import zipfile
+    root = Path(base) / uid
+    n = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for part in ("saves", "trophies", "stats.json"):
+            p = root / part
+            items = [p] if p.is_file() else (sorted(x for x in p.rglob("*") if x.is_file()) if p.is_dir() else [])
+            for f in items:
+                z.write(f, f.relative_to(root).as_posix())
+                n += 1
+    return n
+
+
+def _backup_existing(root, rel_dirs):
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for rel in rel_dirs:
+        cur = root / rel
+        if cur.exists() and has_files(cur):
+            dst = root / "backups" / stamp / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(cur, dst, dirs_exist_ok=True)
+
+
+def import_user(base, uid, source):
+    """Restore saves/trophies of a user from a zip or a folder made by export_user/sync. Existing data is backed up
+    in users/<uid>/backups/<date> first. Returns the number of files restored."""
+    import zipfile
+    root = Path(base) / uid
+    source = Path(source)
+    if source.is_file():
+        with zipfile.ZipFile(source) as z:
+            names = [n for n in z.namelist() if (n.startswith("saves/") or n.startswith("trophies/")) and not n.endswith("/")]
+            games = sorted({"/".join(n.split("/")[:2]) for n in names})
+            _backup_existing(root, games)
+            for g in games:
+                shutil.rmtree(root / g, ignore_errors=True)
+            for n in names:
+                if ".." in Path(n).parts:
+                    continue
+                dst = root / n
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(n) as src, open(dst, "wb") as out:
+                    shutil.copyfileobj(src, out)
+            return len(names)
+    count = 0
+    games = [f"{part}/{d.name}" for part in ("saves", "trophies") if (source / part).is_dir()
+             for d in (source / part).iterdir() if d.is_dir()]
+    _backup_existing(root, games)
+    for g in games:
+        shutil.rmtree(root / g, ignore_errors=True)
+        shutil.copytree(source / g, root / g)
+        count += sum(1 for x in (root / g).rglob("*") if x.is_file())
+    return count
+
+
+def sync_game(base, uid, game_key, sync_root):
+    """Mirror one game's saves and trophies of a user to <sync_root>/<uid>/."""
+    root, dest = Path(base) / uid, Path(sync_root) / uid
+    for part in ("saves", "trophies"):
+        src = root / part / game_key
+        if src.is_dir() and has_files(src):
+            dst = dest / part / game_key
+            tmp = dst.with_name(dst.name + ".tmp")
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(src, tmp)
+            shutil.rmtree(dst, ignore_errors=True)
+            tmp.rename(dst)
 
 
 def _stats_path(base, uid):
