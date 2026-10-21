@@ -899,7 +899,32 @@ class Console:
                              crashed=compat.crashed(rc, getattr(self, "closed_by_user", False)))
         self.report(game, channel, converted=True, window_after=seen.get("t"), seconds=played, exit_code=rc,
                     audit_result=result, log_path=exe.parent / "last_run.log", shots=shots)
-        self.q.put(("ended", rc, str(exe.parent / "last_run.log")))
+        fix = self.auto_fix(game, exe.parent / "last_run.log") if rc else None
+        self.q.put(("ended", rc, str(exe.parent / "last_run.log"), fix))
+
+    PLAYGO_VAR = "APS5_PLAYGO_UNLISTED_CHUNKS"
+    PLAYGO_ABSENT = {"PPSA03001", "PPSA03490"}  # AnyPS5 USAGE.md: these end their chunk search on "absent"
+
+    def auto_fix(self, game, log_path):
+        """Per-game setting for a known stop that AnyPS5 asks the user to answer; returns the note to show, or None."""
+        try:
+            text = Path(log_path).read_text("utf-8", "replace")[-200000:]
+        except OSError:
+            return None
+        env = self.profile(game).get("env", {})
+        cur = env.get(self.PLAYGO_VAR)
+        value = None
+        if "scePlayGo:" in text and self.PLAYGO_VAR in text and not cur and self.PLAYGO_VAR not in os.environ:
+            value = "absent" if game.key.split("-")[0] in self.PLAYGO_ABSENT else "installed"
+        elif cur == "installed" and "Ran out of memory" in text and self.profile(game).get("auto_playgo"):
+            value = "absent"
+        if not value:
+            return None
+        p = self.profile(game, True)
+        p.setdefault("env", {})[self.PLAYGO_VAR] = value
+        p["auto_playgo"] = True
+        self.save_profile(game)
+        return f"Ajustado para este juego: {self.PLAYGO_VAR}={value}. Vuelve a jugarlo."
 
     def anyps5_version(self, channel=None):
         channel = channel or self.conf["channel"]
@@ -1375,7 +1400,8 @@ class Console:
                     self.state = "home"
                 elif msg[1] != 0 and msg[2]:
                     cause = crash_cause(msg[2])
-                    self.error = (f"El juego terminó con codigo {exit_text(msg[1])}", self.log_lines[-12:], msg[2], cause)
+                    fix = msg[3] if len(msg) > 3 else None
+                    self.error = (f"El juego terminó con codigo {exit_text(msg[1])}", self.log_lines[-12:], msg[2], cause, fix)
                     self.state = "error"
                 else:
                     self.state = "home"
@@ -3045,9 +3071,13 @@ class Console:
         self.draw_background(None)
         title, lines, path = self.error[:3]
         cause = self.error[3] if len(self.error) > 3 else None
+        fix = self.error[4] if len(self.error) > 4 else None
         self.text(title, 52, BAD, (120, 150), bold=True)
         y = 250
-        if cause:
+        if fix:
+            self.text(fix, 28, GOOD, (124, y), maxw=W - 250)
+            y += 50
+        elif cause:
             self.text("Causa: " + cause, 28, ACCENT, (124, y), maxw=W - 250)
             self.text("Es un fallo de AnyPS5, no de la consola. Puede ser intermitente: prueba otra vez o actualiza AnyPS5.",
                       22, DIM, (124, y + 42), maxw=W - 250)

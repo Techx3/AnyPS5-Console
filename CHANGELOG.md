@@ -28,6 +28,7 @@ Release notes for AnyPS5 Console. The section of each version is the description
 - Games go fullscreen with AnyPS5's own F11 toggle, so official AnyPS5 builds work without patches (borderless window as fallback).
 - Sets `ANYPS5_FULLSCREEN` and `ANYPS5_USER_NAME` (proposed to AnyPS5) so games open fullscreen directly and show the console user's name.
 - When a game crashes, the error screen shows the exit code in hex with its meaning (for example `0xC0000409 (forced abort)`) and the cause from AnyPS5's log (for example `AGC graphics: storage texture has no committed guest pages`).
+- Dumps without PlayGo data (for example Crash Bandicoot 4): when AnyPS5 stops asking for `APS5_PLAYGO_UNLISTED_CHUNKS`, the console sets it for that game (`installed`, or `absent` for titles that need it) and tells you to play again.
 - Experimental Linux / Steam Deck AppImage (builds AnyPS5 main or forks locally).
 - Settings and lists no longer draw over the top bar when scrolled.
 
