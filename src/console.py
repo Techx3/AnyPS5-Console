@@ -81,6 +81,39 @@ def save_conf(conf):
     CONF_PATH.write_text(json.dumps(conf, indent=2, ensure_ascii=False), "utf-8")
 
 
+
+EXIT_CODES = {0xC0000005: "acceso inválido a memoria", 0xC00000FD: "desbordamiento de pila",
+              0xC0000409: "cierre forzado", 0xC000001D: "instrucción no válida", 0xC0000374: "memoria dañada",
+              0xC0000135: "falta una DLL", 0xC0000142: "no se pudo iniciar"}
+
+
+def exit_text(code):
+    try:
+        u = int(code) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return str(code)
+    if u <= 0xFFFF:
+        return str(code)
+    name = EXIT_CODES.get(u)
+    return f"0x{u:08X}" + (f" ({name})" if name else "")
+
+
+def crash_cause(log_path, tail=400):
+    """The line of AnyPS5's log that says why the game stopped (exception text, GPU failure, fatal signal)."""
+    try:
+        lines = Path(log_path).read_text("utf-8", "replace").splitlines()[-tail * 10:]
+    except (OSError, TypeError):
+        return None
+    pats = [(re.compile(r"what\(\):\s*(.+)"), 1), (re.compile(r"driver failure:\s*(.+)"), 1),
+            (re.compile(r"(Unhandled exception.+|unresolved import.+|Assertion failed.+)", re.I), 1),
+            (re.compile(r"^FATAL:\s*(.+)"), 1)]
+    for rx, g in pats:
+        for line in reversed(lines):
+            m = rx.search(line)
+            if m:
+                return m.group(g).strip()[:200]
+    return None
+
 class Console:
     def __init__(self):
         os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
@@ -1341,7 +1374,8 @@ class Console:
                     self.closed_by_user = False
                     self.state = "home"
                 elif msg[1] != 0 and msg[2]:
-                    self.error = (f"El juego terminó con codigo {msg[1]}", self.log_lines[-14:], msg[2])
+                    cause = crash_cause(msg[2])
+                    self.error = (f"El juego terminó con codigo {exit_text(msg[1])}", self.log_lines[-12:], msg[2], cause)
                     self.state = "error"
                 else:
                     self.state = "home"
@@ -3009,9 +3043,15 @@ class Console:
 
     def draw_error(self):
         self.draw_background(None)
-        title, lines, path = self.error
+        title, lines, path = self.error[:3]
+        cause = self.error[3] if len(self.error) > 3 else None
         self.text(title, 52, BAD, (120, 150), bold=True)
         y = 250
+        if cause:
+            self.text("Causa: " + cause, 28, ACCENT, (124, y), maxw=W - 250)
+            self.text("Es un fallo de AnyPS5, no de la consola. Puede ser intermitente: prueba otra vez o actualiza AnyPS5.",
+                      22, DIM, (124, y + 42), maxw=W - 250)
+            y += 100
         for line in lines:
             self.text(line, 24, TEXT, (124, y), maxw=W - 250)
             y += 34
