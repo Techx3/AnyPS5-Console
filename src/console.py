@@ -154,6 +154,7 @@ class Console:
         self.game_exe = None
         self.music_on = False
         self.app_update = None
+        self.bg = None
         self.compat_store = compat.Store(paths.DATA)
         self.device_code = None
         if self.conf.get("compat"):
@@ -310,6 +311,29 @@ class Console:
         if ch == "release":
             return "Estable"
         return "Fork " + ch[5:]
+
+    def version_menu(self):
+        items = []
+        for ch in self.channels():
+            u = self.updates.get(ch) or {}
+            if not self.channel_ready(ch):
+                state = "no instalada"
+            elif self.bg_busy(ch):
+                state = "actualizando"
+            elif u.get("update"):
+                state = "actualización disponible"
+            else:
+                state = "al día" if u else ""
+            label = self.tr(self.channel_name(ch)) + (" (en uso)" if ch == self.conf["channel"] else "")
+            items.append((label + (f"  ·  {state}" if state else ""), lambda ch=ch: self.choose_version(ch)))
+        items.append(("Cerrar", None))
+        self.open_menu(self.tr("Versión de AnyPS5"), items)
+
+    def choose_version(self, ch):
+        if not self.channel_ready(ch, True):
+            self.toast = (f"{self.channel_name(ch)} no está instalada. Instálala en Actualizaciones.", time.time() + 6)
+            return
+        self.set_channel(ch)
 
     def channel_ready(self, ch, fresh=False):
         cache = getattr(self, "_ready", {})
@@ -519,19 +543,6 @@ class Console:
         paths.setup_environment()
         self._ready = {}
         self.q.put(("done", "Herramientas de compilación instaladas."))
-
-    def task_update_fork(self, fork):
-        path = self.fork_dir(fork["name"])
-        if not (fork.get("own") and (path / "build" / "CMakeCache.txt").is_file()
-                and updater.tools_status(paths.TOOLS)["git"]):
-            self.require_tools()
-        updater.fork_sync(path, fork, self.log)
-        cfg = self.base_cfg()
-        cfg["anyps5_dir"] = str(path)
-        core.build_anyps5(cfg, self.log)
-        self._ready = {}
-        self.q.put(("done", f"Fork {fork['name']} listo."))
-        self.task_check_updates()
 
     def task_remove_fork(self, name, delete):
         if delete:
@@ -766,52 +777,73 @@ class Console:
                 ("No, descargar una copia nueva", lambda: self.confirm_new_copy()),
                 ("Cancelar", None)])
             return
-        self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
+        self.bg_update(["repo"])
 
     def confirm_new_copy(self):
         self.conf["anyps5_dir_asked"] = True
         save_conf(self.conf)
-        self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
+        self.bg_update(["repo"])
 
     def use_existing_menu(self):
-        self.open_menu(self.tr("¿Qué AnyPS5 tienes?"), [
-            ("Main oficial (boykopovar/AnyPS5)", lambda: self.pick_existing("repo")),
-            ("Release estable (relinker .exe)", lambda: self.pick_existing("release")),
-            ("Un fork (otro repositorio)", lambda: self.pick_existing("fork")),
-            ("Cancelar", None)])
-
-    def pick_existing(self, kind):
         d = self.ask_path("Carpeta de AnyPS5", True)
         if not d:
             return
         root = Path(d)
         self.conf["anyps5_dir_asked"] = True
         save_conf(self.conf)
-        if kind == "release":
-            try:
-                info = updater.adopt_release(REL_DIR, root)
-            except Exception as e:
-                self.toast = (str(e), time.time() + 7)
-                return
-            self._ready = {}
-            self.set_channel("release")
-            self.toast = (f"Versión estable {info['tag']} lista", time.time() + 6)
-            self.worker(self.task_check_updates)
+        if (root / ".git").exists() and (root / "CMakeLists.txt").is_file() and (root / "core").is_dir():
+            origin, branch = updater.repo_info(root)
+            if origin and updater.is_upstream(origin):
+                label = "Main oficial (boykopovar/AnyPS5)"
+                yes = lambda: self.adopt_main(root)
+            elif origin:
+                try:
+                    fork = updater.parse_fork(origin + (f"#{branch}" if branch else ""))
+                except Exception:
+                    fork = None
+                label = f"Fork {fork['name'] if fork else origin}"
+                yes = (lambda: self.adopt_fork(root, origin, branch)) if fork else (lambda: self.edit_fork(root, origin, branch))
+            else:
+                label = "Repositorio sin origin"
+                yes = lambda: self.edit_fork(root, "", branch)
+            self.open_menu(self.tr("Detectado"), [
+                (f"Usar {label}" + (f"  ·  {branch}" if branch else ""), yes),
+                ("No, es un fork: escribir su enlace", lambda: self.edit_fork(root, origin, branch)),
+                ("Cancelar", None)])
             return
-        if not ((root / ".git").exists() and (root / "CMakeLists.txt").is_file() and (root / "core").is_dir()):
-            self.toast = ("Esa carpeta no es un repositorio de AnyPS5 (falta .git, CMakeLists.txt o core).",
-                          time.time() + 7)
+        try:
+            info = updater.release_info(root)
+        except Exception:
+            self.toast = ("No se reconoce AnyPS5 en esa carpeta: no es un repositorio ni una release.", time.time() + 7)
             return
-        origin, branch = updater.repo_info(root)
-        if kind == "repo":
-            self.pick_anyps5_dir(root=root)
-            self.use_channel("repo")
-            if origin and not updater.is_upstream(origin):
-                self.toast = ("Su origin es otro repositorio; se actualizará desde boykopovar/AnyPS5 main.",
-                              time.time() + 8)
+        self.open_menu(self.tr("Detectado"), [
+            (f"Usar Estable {info['tag']}", lambda: self.adopt_release(root)),
+            ("Cancelar", None)])
+
+    def adopt_main(self, root):
+        self.pick_anyps5_dir(root=root)
+        self.use_channel("repo")
+        if not core.find_relinker({"relinker": "", "anyps5_dir": str(root)}):
+            self.bg_update(["repo"])
+
+    def adopt_release(self, root):
+        try:
+            info = updater.adopt_release(REL_DIR, root)
+        except Exception as e:
+            self.toast = (str(e), time.time() + 7)
             return
-        url = origin if origin.startswith("http") or origin.startswith("git@") else "https://github.com/"
-        if branch and branch not in ("main", "master"):
+        self._ready = {}
+        self.use_channel("release")
+        self.toast = (f"Versión estable {info['tag']} lista", time.time() + 6)
+        self.worker(self.task_check_updates)
+
+    def adopt_fork(self, root, origin, branch):
+        self.kb = {"name": origin + (f"#{branch}" if branch else ""), "own_dir": str(root), "mode": "url"}
+        self.finish_fork()
+
+    def edit_fork(self, root, origin, branch):
+        url = origin if origin.startswith(("http", "git@")) else "https://github.com/"
+        if branch and origin:
             url += "#" + branch
         self.kb = {"name": url, "r": 1, "c": 0, "mode": "url", "own_dir": str(root)}
         self.go("newuser")
@@ -843,7 +875,7 @@ class Console:
         self.worker(self.task_check_updates)
         self.worker(self.task_scan)
         if then_update:
-            self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
+            self.bg_update(["repo"])
 
     def reset_anyps5_dir(self):
         self.conf.pop("anyps5_dir", None)
@@ -851,24 +883,109 @@ class Console:
         self._ready = {}
         self.worker(self.task_check_updates)
 
-    def task_update_repo(self):
-        root = self.anyps5_root()
-        own_build = (root / "build" / "CMakeCache.txt").is_file()
+    # ------------------------------------------------------------ background updates
+    def installed_channels_cached(self):
+        c = getattr(self, "_installed", None)
+        if not c or time.time() - c[0] > 5:
+            c = (time.time(), self.installed_channels())
+            self._installed = c
+        return c[1]
+
+    def installed_channels(self):
+        out = []
+        if (self.anyps5_root() / ".git").exists():
+            out.append("repo")
+        if updater.release_current(REL_DIR):
+            out.append("release")
+        out += ["fork:" + f["name"] for f in self.forks() if (self.fork_dir(f["name"]) / ".git").exists()]
+        return out
+
+    def bg_busy(self, ch=None):
+        b = self.bg
+        if not b:
+            return False
+        return ch is None or ch == b.get("current") or ch in b["queue"]
+
+    def bg_update(self, channels):
+        channels = [c for c in channels if c in self.channels()]
+        if not channels:
+            return
+        if self.bg:
+            new = [c for c in channels if not self.bg_busy(c)]
+            self.bg["queue"] += new
+            self.bg["n"] += len(new)
+        else:
+            procs.bg_cancel.clear()
+            self.bg = {"queue": list(channels), "current": None, "done": 0, "n": len(channels), "log": [],
+                       "progress": None}
+            threading.Thread(target=self.task_bg, name=procs.BG_THREAD, daemon=True).start()
+        names = ", ".join(self.tr(self.channel_name(c)) for c in channels)
+        self.toast = (f"Actualizando en segundo plano: {names}", time.time() + 5)
+
+    def update_all(self):
+        pend = [c for c in self.installed_channels() if (self.updates.get(c) or {}).get("update")]
+        if not pend:
+            self.toast = ("Todo está al día", time.time() + 4)
+            return
+        self.bg_update(pend)
+
+    def cancel_bg(self):
+        if not self.bg:
+            return
+        procs.bg_cancel.set()
+        self.bg["queue"] = []
+        threading.Thread(target=procs.kill_all, kwargs={"bg": True}, daemon=True).start()
+
+    def bglog(self, line):
+        self.q.put(("bglog", line))
+
+    def task_bg(self):
+        results = []
+        b = self.bg
+        while b["queue"] and not procs.bg_cancel.is_set():
+            ch = b["queue"].pop(0)
+            b["current"], b["progress"] = ch, None
+            self.bglog(f"== {self.channel_name(ch)} ==")
+            try:
+                self.update_channel(ch, self.bglog)
+                results.append((ch, True, ""))
+            except Exception as e:
+                cancelled = procs.bg_cancel.is_set()
+                results.append((ch, False, "Cancelado" if cancelled else str(e)))
+                self.bglog(("Cancelado" if cancelled else "Error: " + str(e))[:400])
+            b["done"] += 1
+            b["current"] = None
+            self._ready = {}
+        self.q.put(("bg_done", results))
+        try:
+            self.task_check_updates()
+            self.task_scan()
+        except Exception:
+            pass
+
+    def update_channel(self, ch, log):
+        if ch == "release":
+            check = updater.release_check(REL_DIR)
+            updater.release_update(REL_DIR, check, log)
+            return
+        if ch == "repo":
+            path, fork = self.anyps5_root(), None
+        else:
+            fork = self.fork_of(ch)
+            if not fork:
+                raise RuntimeError("Fork no encontrado")
+            path = self.fork_dir(fork["name"])
+        own_build = (path / "build" / "CMakeCache.txt").is_file()
         if not (own_build and updater.tools_status(paths.TOOLS)["git"]):
             self.require_tools()
-        updater.repo_update(self.anyps5_root(), UPSTREAM, self.log)
+        if fork:
+            updater.fork_sync(path, fork, log)
+        else:
+            updater.repo_update(path, UPSTREAM, log)
+        procs.check_cancel()
         cfg = self.base_cfg()
-        core.build_anyps5(cfg, self.log)
-        self.q.put(("done", "AnyPS5 actualizado desde el repositorio."))
-        self.task_check_updates()
-        self.task_scan()
-
-    def task_update_release(self):
-        check = updater.release_check(REL_DIR)
-        updater.release_update(REL_DIR, check, self.log)
-        self.q.put(("done", f"Versión estable {check['remote']} instalada."))
-        self.task_check_updates()
-        self.task_scan()
+        cfg["anyps5_dir"] = str(path)
+        core.build_anyps5(cfg, log)
 
     def start_busy(self, title, fn, *args):
         self.busy_title = title
@@ -952,6 +1069,23 @@ class Console:
                 self.app_err = msg[2]
                 if msg[1] and msg[1]["update"]:
                     self.toast = (f"AnyPS5 Console {msg[1]['remote']} disponible  ·  Menú > Actualizaciones", time.time() + 12)
+            elif kind == "bglog":
+                if self.bg:
+                    self.bg["log"] = (self.bg["log"] + [msg[1]])[-300:]
+                    m = re.search(r"\[(\d+)/(\d+)\]", msg[1]) or re.search(r"(\d{1,3})%", msg[1])
+                    if m:
+                        self.bg["progress"] = int(m[1]) / int(m[2]) if m.lastindex == 2 else int(m[1]) / 100
+            elif kind == "bg_done":
+                ok = [self.tr(self.channel_name(c)) for c, good, _ in msg[1] if good]
+                bad = [(self.tr(self.channel_name(c)), err) for c, good, err in msg[1] if not good]
+                parts = []
+                if ok:
+                    parts.append("Actualizado: " + ", ".join(ok))
+                if bad:
+                    parts.append("Falló: " + ", ".join(n for n, _ in bad))
+                self.toast = ("  ·  ".join(parts) or "Sin cambios", time.time() + 10)
+                self.bg_last = {"log": self.bg["log"] if self.bg else [], "results": msg[1]}
+                self.bg = None
             elif kind == "quit":
                 self.running = False
             elif kind == "update":
@@ -1102,6 +1236,10 @@ class Console:
         if channel and not self.channel_ready(channel, True):
             self.toast = (f"La versión {self.channel_name(channel)} no está instalada.", time.time() + 5)
             return
+        if self.bg_busy(channel or self.conf["channel"]):
+            self.toast = (f"{self.tr(self.channel_name(channel))} se está actualizando; espera a que termine o elige otra versión.",
+                          time.time() + 6)
+            return
         label = f" ({self.channel_name(channel)})" if channel else ""
         self.start_busy(f"Preparando {game.name}{label}", self.task_play, game, force, channel, skip_audit)
 
@@ -1234,7 +1372,10 @@ class Console:
                 cur = c.get("game_lang", "auto")
                 c["game_lang"] = opts[(opts.index(cur if cur in opts else "auto") + step) % len(opts)]
         elif key == "channel":
-            self.set_channel(self.next_channel())
+            if step == 0:
+                self.version_menu()
+            else:
+                self.set_channel(self.next_channel())
         elif key == "pc" and step == 0:
             self.pc_menu()
         elif key in ("pc_steam", "pc_epic"):
@@ -1265,10 +1406,10 @@ class Console:
 
     def updates_rows(self):
         rows = [
-            ("Usar versión: " + self.channel_name(), lambda: self.set_channel(self.next_channel())),
+            ("Usar versión: " + self.channel_name(), self.version_menu),
             ("Actualizar desde el repositorio y compilar", self.update_repo),
-            ("Instalar la versión estable", lambda: self.start_busy(
-                "Instalando versión estable", self.task_update_release)),
+            (("Actualizar la versión estable" if updater.release_current(REL_DIR) else "Instalar la versión estable"),
+             lambda: self.bg_update(["release"])),
         ]
         for f in self.forks():
             rows.append((f"Fork {f['name']}…", lambda f=f: self.fork_menu(f)))
@@ -1276,6 +1417,18 @@ class Console:
         if not (st["git"] and st["mingw"]):
             rows.append(("Instalar herramientas de compilación (Git + MinGW)", lambda: self.start_busy(
                 "Instalando herramientas de compilación", self.task_install_tools)))
+        if self.bg:
+            b = self.bg
+            cur = self.tr(self.channel_name(b["current"])) if b.get("current") else "…"
+            rows.insert(0, (f"Ver progreso: {cur} ({min(b['done'] + 1, b['n'])}/{b['n']})",
+                            lambda: setattr(self, "state", "bglog")))
+            rows.insert(1, ("Cancelar actualizaciones en segundo plano", self.cancel_bg))
+        else:
+            pend = [c for c in self.installed_channels() if (self.updates.get(c) or {}).get("update")]
+            if pend:
+                rows.insert(0, (f"Actualizar todo ({len(pend)})", self.update_all))
+            if getattr(self, "bg_last", None):
+                rows.append(("Ver registro de la última actualización", lambda: setattr(self, "state", "bglog")))
         a = self.app_update
         if a and a.get("update"):
             rows.insert(0, (f"Actualizar AnyPS5 Console a {a['remote']}", lambda: self.start_busy(
@@ -1292,7 +1445,7 @@ class Console:
         ch = "fork:" + f["name"]
         installed = (self.fork_dir(f["name"]) / ".git").exists()
         items = [(("Actualizar y compilar" if installed else "Clonar y compilar"),
-                  lambda: self.start_busy(f"Fork {f['name']}", self.task_update_fork, f))]
+                  lambda: self.bg_update(["fork:" + f["name"]]))]
         if ch != self.conf["channel"]:
             items.append(("Usar esta versión", lambda: self.set_channel(ch)))
         items.append(("Quitar de la lista", lambda: self.remove_fork(f, False)))
@@ -1337,9 +1490,10 @@ class Console:
                 self.toast = (f"Fork {fork['name']} listo.", time.time() + 6)
                 self.worker(self.task_check_updates)
             else:
-                self.start_busy(f"Fork {fork['name']}", self.task_update_fork, fork)
+                self.bg_update(["fork:" + fork["name"]])
             return
-        self.start_busy(f"Instalando fork {fork['name']}", self.task_update_fork, fork)
+        self.state = "updates"
+        self.bg_update(["fork:" + fork["name"]])
 
     def handle(self, action):
         if self.menu:
@@ -1452,6 +1606,11 @@ class Console:
                 self.play(v["game"], skip_audit=True)
             elif action == "options" and v["game"] is not None:
                 self.open_folder(Path(self.core_cfg()["cache_dir"]) / v["game"].key)
+        elif st == "bglog":
+            if action in ("back", "ok"):
+                self.state = "updates"
+            elif action == "options" and self.bg:
+                self.cancel_bg()
         elif st == "error":
             if action in ("ok", "back"):
                 self.state = "home"
@@ -1744,12 +1903,24 @@ class Console:
             self.text(self.user["name"], 30, TEXT, (140, 62), anchor="midleft")
         else:
             self.text("AnyPS5", 34, ACCENT, (70, 40), bold=True)
-        ch = "Repositorio" if self.conf["channel"] == "repo" else "Estable"
-        self.text(ch, 22, DIM, (W - 215, 62), anchor="midright")
+        r = self.text(self.channel_name(), 22, DIM, (W - 215, 62), anchor="midright", maxw=420)
         self.text(time.strftime("%H:%M"), 34, TEXT, (W - 70, 40), anchor="topright")
-        pend = any(self.updates[c] and self.updates[c]["update"] for c in ("repo", "release"))
+        pend = any((self.updates.get(c) or {}).get("update") for c in self.installed_channels_cached())
         if pend:
             pygame.draw.circle(self.screen, ACCENT, (W - 190, 62), 9)
+        if self.bg:
+            b = self.bg
+            cur = self.tr(self.channel_name(b["current"])) if b.get("current") else "…"
+            label = f"{self.tr('Actualizando')} {cur} ({min(b['done'] + 1, b['n'])}/{b['n']})"
+            if b.get("progress") is not None:
+                label += f"  {int(b['progress'] * 100)}%"
+            t = time.time()
+            x = r.left - 40
+            for i in range(6):
+                a = t * 4 + i * math.pi / 3
+                c = int(90 + 165 * ((i + int(t * 6)) % 6) / 5)
+                pygame.draw.circle(self.screen, (c, c, c), (x + int(10 * math.cos(a)), 62 + int(10 * math.sin(a))), 3)
+            self.text(label, 22, ACCENT, (x - 22, 62), anchor="midright", maxw=520)
 
     def draw_hints(self, hints):
         x = 70
@@ -1983,6 +2154,33 @@ class Console:
             y += 34
         self.draw_hints([("B", "Cancelando…" if self.cancelling else "Cancelar")])
 
+    def draw_bglog(self):
+        self.draw_background(None)
+        self.draw_topbar()
+        b = self.bg
+        if b:
+            cur = self.tr(self.channel_name(b["current"])) if b.get("current") else "…"
+            title = f"Actualizando {cur} ({min(b['done'] + 1, b['n'])}/{b['n']})"
+            log, progress = b["log"], b.get("progress")
+        else:
+            last = getattr(self, "bg_last", None) or {"log": [], "results": []}
+            title, log, progress = "Última actualización", last["log"], 1.0
+        self.text(title, 48, TEXT, (120, 170), bold=True, maxw=W - 240)
+        bar = pygame.Rect(120, 250, W - 240, 10)
+        pygame.draw.rect(self.screen, (50, 56, 68), bar, border_radius=5)
+        if progress is not None:
+            fill = bar.copy()
+            fill.width = max(10, int(bar.width * max(0.0, min(1.0, progress))))
+            pygame.draw.rect(self.screen, ACCENT, fill, border_radius=5)
+        y = 300
+        for line in log[-19:]:
+            self.text(line, 24, TEXT if line.startswith("==") else DIM, (124, y), maxw=W - 250)
+            y += 34
+        hints = [("B", "Volver")]
+        if b:
+            hints.append(("Y", "Cancelar"))
+        self.draw_hints(hints)
+
     def draw_audit(self):
         v = self.audit_view
         d = v["data"]
@@ -2187,18 +2385,21 @@ class Console:
         shade = pygame.Surface((W, H), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 160))
         self.screen.blit(shade, (0, 0))
-        box = pygame.Rect(W - 640, 0, 640, H)
+        need = max([self.render_str(self.tr(lbl), 32, TEXT).get_width() for lbl, _ in m["items"]] +
+                   [self.render_str(self.tr(m["title"]), 40, TEXT, True).get_width()])
+        bw = max(640, min(1000, need + 110))
+        box = pygame.Rect(W - bw, 0, bw, H)
         pygame.draw.rect(self.screen, (18, 24, 34), box)
-        self.text(m["title"], 40, TEXT, (box.x + 50, 120), bold=True, maxw=540)
+        self.text(m["title"], 40, TEXT, (box.x + 50, 120), bold=True, maxw=bw - 100)
         visible = max(1, (H - 260) // 84)
         first = min(max(0, m["i"] - visible + 1), max(0, len(m["items"]) - visible))
         first = min(first, m["i"])
         y = 220
         for i, (label, _) in enumerate(m["items"][first:first + visible], start=first):
-            r = pygame.Rect(box.x + 30, y, 580, 70)
+            r = pygame.Rect(box.x + 30, y, bw - 60, 70)
             if i == m["i"]:
                 pygame.draw.rect(self.screen, ACCENT, r, 3, border_radius=12)
-            self.text(label, 32, TEXT, (r.x + 24, r.centery), anchor="midleft", maxw=540)
+            self.text(label, 32, TEXT, (r.x + 24, r.centery), anchor="midleft", maxw=bw - 100)
             y += 84
         if len(m["items"]) > visible:
             self.text(f"{m['i'] + 1} / {len(m['items'])}", 22, DIM, (box.right - 40, H - 40), anchor="bottomright")
@@ -2231,9 +2432,11 @@ class Console:
         elif st == "updates":
             rows = self.updates_rows()
             self.draw_list_screen("Actualizaciones", [(a, "") for a, _ in rows], getattr(self, "urow", 0) % len(rows),
-                                  self.draw_updates_info, 60 * len(self.channels()) + 20)
+                                  self.draw_updates_info, 60 * len(self.channels()) + 80)
         elif st == "busy":
             self.draw_busy()
+        elif st == "bglog":
+            self.draw_bglog()
         elif st == "playing":
             self.draw_playing()
         elif st == "audit":

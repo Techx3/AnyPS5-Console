@@ -181,8 +181,8 @@ def is_upstream(url):
     return u.endswith("github.com/boykopovar/anyps5") or u.endswith("github.com:boykopovar/anyps5")
 
 
-def adopt_release(base, folder):
-    """Use a release the user already unpacked (relinker*.exe + prx libraries) as the installed stable version."""
+def release_info(folder):
+    """relinker, libraries and tag of a release folder the user unpacked; raises if it is not one."""
     folder = Path(folder).resolve()
     relinker = next(iter(sorted(folder.rglob("relinker*.exe"))), None) or next(iter(sorted(folder.rglob("relinker"))), None)
     prx = next(iter(sorted(folder.rglob("*.prx"))), None)
@@ -193,6 +193,12 @@ def adopt_release(base, folder):
     tools = folder / "tools"
     if (tools / "import_audit.py").is_file():
         info["tools"] = str(tools)
+    return info
+
+
+def adopt_release(base, folder):
+    """Use a release the user already unpacked as the installed stable version."""
+    info = release_info(folder)
     Path(base).mkdir(parents=True, exist_ok=True)
     (Path(base) / "current.json").write_text(json.dumps(info, indent=2), "utf-8")
     return info
