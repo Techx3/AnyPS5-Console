@@ -21,6 +21,7 @@ The installed version keeps its data in `%LOCALAPPDATA%\AnyPS5Console`.
 4. **Install an AnyPS5 version.** *Menu* > *Updates*:
    - *Install the stable version*: downloads the latest AnyPS5 release. Nothing else is needed. This is the recommended start.
    - *Update from the repository and build*: clones `boykopovar/AnyPS5` and builds it. Needs the build tools (*Install build tools*, about 350 MB, or the installer option).
+     If you already have your own AnyPS5 clone, the console asks for its folder the first time (or *Settings* > *AnyPS5 folder*). It merges `boykopovar/AnyPS5` main into your current branch, keeps your local commits and reuses your existing `build/` folder.
    - *Add fork (GitHub link)*: any fork or branch, built the same way.
    - *Use version*: switches between the installed ones.
 5. **Play.** Select a game and press A. The first launch converts it (a few seconds to a few minutes) and checks the system functions it needs; if something is missing you see the report and can still try with *Play anyway*. The game opens fullscreen on top of the console and you return when you close it.

@@ -420,14 +420,19 @@ def emulator_command(template, game):
 
 def build_anyps5(cfg, log):
     root = Path(cfg["anyps5_dir"])
-    missing = [t for t in ("git", "cmake", "ninja", "gcc", "g++") if not shutil.which(t)]
+    own = (root / "build" / "CMakeCache.txt").is_file()
+    missing = [t for t in (("git", "cmake") if own else ("git", "cmake", "ninja", "gcc", "g++")) if not shutil.which(t)]
     if missing:
         raise RuntimeError("Faltan herramientas en PATH: " + ", ".join(missing)
                            + (" (Windows: MinGW-w64 GCC 15.2.0 winlibs ucrt-posix-seh)" if IS_WIN else ""))
-    steps = [
-        ["git", "submodule", "update", "--init", "--recursive"],
-        ["cmake", "-S", ".", "-B", "build", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
-         "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++"],
+    steps = [["git", "submodule", "update", "--init", "--recursive"]]
+    if own:
+        # Existing build (maybe the user's own): keep its generator and options, cmake reconfigures if needed.
+        log("Usando la compilación existente en build/.")
+    else:
+        steps.append(["cmake", "-S", ".", "-B", "build", "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
+                      "-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++"])
+    steps += [
         ["cmake", "--build", "build", "--parallel"],
         ["cmake", "--build", "build", "--target", "libs", "--parallel"],
     ]

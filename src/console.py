@@ -748,8 +748,60 @@ class Console:
         except Exception:
             pass
 
+    def update_repo(self):
+        root = self.anyps5_root()
+        if not (root / ".git").exists() and not self.conf.get("anyps5_dir_asked"):
+            self.open_menu(self.tr("¿Ya tienes AnyPS5 en tu PC?"), [
+                ("Sí, elegir su carpeta", lambda: self.pick_anyps5_dir(then_update=True)),
+                ("No, descargar una copia nueva", lambda: self.confirm_new_copy()),
+                ("Cancelar", None)])
+            return
+        self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
+
+    def confirm_new_copy(self):
+        self.conf["anyps5_dir_asked"] = True
+        save_conf(self.conf)
+        self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
+
+    def anyps5_dir_menu(self):
+        items = [("Elegir mi copia de AnyPS5…", lambda: self.pick_anyps5_dir())]
+        if self.conf.get("anyps5_dir"):
+            items.append(("Usar la copia de la consola", self.reset_anyps5_dir))
+        items.append(("Cerrar", None))
+        self.open_menu(self.tr("Carpeta de AnyPS5 (repositorio)"), items)
+
+    def pick_anyps5_dir(self, then_update=False):
+        d = self.ask_path("Carpeta de AnyPS5", True, self.conf.get("anyps5_dir") or None)
+        if not d:
+            return
+        root = Path(d)
+        if not ((root / ".git").exists() and (root / "CMakeLists.txt").is_file() and (root / "core").is_dir()):
+            self.toast = ("Esa carpeta no es un repositorio de AnyPS5 (falta .git, CMakeLists.txt o core).",
+                          time.time() + 7)
+            return
+        self.conf["anyps5_dir"] = str(root)
+        self.conf["anyps5_dir_asked"] = True
+        save_conf(self.conf)
+        self._ready = {}
+        found = core.find_relinker({"relinker": "", "anyps5_dir": str(root)})
+        self.toast = (("Compilación encontrada: " + found.name) if found else "Carpeta guardada (sin compilar todavía)",
+                      time.time() + 6)
+        self.worker(self.task_check_updates)
+        self.worker(self.task_scan)
+        if then_update:
+            self.start_busy("Actualizando AnyPS5 (repositorio)", self.task_update_repo)
+
+    def reset_anyps5_dir(self):
+        self.conf.pop("anyps5_dir", None)
+        save_conf(self.conf)
+        self._ready = {}
+        self.worker(self.task_check_updates)
+
     def task_update_repo(self):
-        self.require_tools()
+        root = self.anyps5_root()
+        own_build = (root / "build" / "CMakeCache.txt").is_file()
+        if not (own_build and updater.tools_status(paths.TOOLS)["git"]):
+            self.require_tools()
         updater.repo_update(self.anyps5_root(), UPSTREAM, self.log)
         cfg = self.base_cfg()
         core.build_anyps5(cfg, self.log)
@@ -1065,6 +1117,7 @@ class Console:
             ("Idioma de los juegos", self.game_lang_label(), "game_lang"),
             ("Versión de AnyPS5", self.channel_name(), "channel"),
             ("Carpeta de juegos PS5", c["games_dir"] or "(sin elegir)", "games_dir"),
+            ("Carpeta de AnyPS5 (repositorio)", c.get("anyps5_dir") or "(copia de la consola)", "anyps5_dir"),
             ("Juegos PC (carpetas y ejecutables)", f"{len(c.get('pc_dirs', []))} carpetas, {len(c.get('pc_exes', []))} exe", "pc"),
             ("Detectar juegos de Steam", "Sí" if c.get("pc_steam", True) else "No", "pc_steam"),
             ("Detectar juegos de Epic Games", "Sí" if c.get("pc_epic", True) else "No", "pc_epic"),
@@ -1135,6 +1188,8 @@ class Console:
             self.worker(self.task_scan_pc)
         elif key == "games_dir" and step == 0:
             self.pick_folder()
+        elif key == "anyps5_dir" and step == 0:
+            self.anyps5_dir_menu()
         elif key == "fullscreen":
             c["fullscreen"] = not c["fullscreen"]
             self.apply_display()
@@ -1157,8 +1212,7 @@ class Console:
     def updates_rows(self):
         rows = [
             ("Usar versión: " + self.channel_name(), lambda: self.set_channel(self.next_channel())),
-            ("Actualizar desde el repositorio y compilar", lambda: self.start_busy(
-                "Actualizando AnyPS5 (repositorio)", self.task_update_repo)),
+            ("Actualizar desde el repositorio y compilar", self.update_repo),
             ("Instalar la versión estable", lambda: self.start_busy(
                 "Instalando versión estable", self.task_update_release)),
         ]

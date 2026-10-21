@@ -24,9 +24,9 @@ def repo_check(root, upstream="https://github.com/boykopovar/AnyPS5.git"):
     if not (Path(root) / ".git").exists():
         sha = _remote_head(upstream, "main")
         return {"remote": sha[:9], "local": "-", "update": True}
-    remote = _git(root, "ls-remote", "origin", "refs/heads/main").stdout.split()
+    remote = _git(root, "ls-remote", upstream, "refs/heads/main").stdout.split()
     if not remote:
-        raise RuntimeError("No se pudo leer origin/main")
+        raise RuntimeError("No se pudo leer main de " + upstream)
     sha = remote[0]
     head = _git(root, "rev-parse", "HEAD").stdout.strip()
     has = _git(root, "cat-file", "-e", sha + "^{commit}", check=False).returncode == 0
@@ -44,12 +44,15 @@ def repo_update(root, upstream, log):
         if p.returncode != 0:
             raise RuntimeError("git clone: " + (p.stderr or p.stdout).strip()[-500:])
         return
-    log("Descargando cambios de origin/main...")
-    _git(root, "fetch", "origin", "main", timeout=600)
-    behind = _git(root, "rev-list", "--count", "HEAD..origin/main").stdout.strip()
+    log(f"Descargando cambios de {upstream} (main)...")
+    _git(root, "fetch", upstream, "main", timeout=600)
+    behind = _git(root, "rev-list", "--count", "HEAD..FETCH_HEAD").stdout.strip()
+    if behind == "0":
+        log("Ya estaba al día.")
+        return
     log(f"{behind} commits nuevos. Fusionando...")
-    p = _git(root, "-c", "user.name=Suery", "-c", "user.email=suery@local",
-             "merge", "--no-edit", "origin/main", check=False, timeout=600)
+    p = _git(root, "-c", "user.name=AnyPS5 Console", "-c", "user.email=anyps5-console@local",
+             "merge", "--no-edit", "FETCH_HEAD", check=False, timeout=600)
     if p.returncode != 0:
         _git(root, "merge", "--abort", check=False)
         raise RuntimeError("Conflicto al fusionar; se deshizo. Hay que resolverlo a mano.\n"
