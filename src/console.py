@@ -186,6 +186,56 @@ class Console:
         self.state = state
         self.state_t = time.time()
         self.fade = 1.0
+        if state == "home":
+            self.maybe_first_setup()
+
+    # ------------------------------------------------------------ first run
+    def maybe_first_setup(self):
+        if getattr(self, "_setup_asked", False):
+            return
+        self._setup_asked = True
+        if any(self.channel_ready(c, True) for c in self.channels()):
+            if not self.conf.get("setup_done"):
+                self.conf["setup_done"] = True
+                save_conf(self.conf)
+            return
+        if self.bg:
+            return
+        self.setup_menu()
+
+    def setup_menu(self):
+        self.open_menu(self.tr("¿Tienes AnyPS5 instalado en tu PC?"), [
+            ("Sí, elegir su carpeta", self.setup_existing),
+            ("No, instalarlo ahora", self.setup_install_menu),
+            ("Más tarde", None)])
+
+    def setup_existing(self):
+        self.conf["setup_done"] = True
+        save_conf(self.conf)
+        self.use_existing_menu()
+
+    def setup_install_menu(self):
+        self.open_menu(self.tr("¿Qué versión quieres usar?"), [
+            ("Estable (release): recomendada, no hay que compilar", lambda: self.setup_install("release")),
+            ("Main oficial: lo último, se compila en tu PC", lambda: self.setup_install("repo")),
+            ("Un fork (enlace de GitHub)", lambda: self.setup_install("fork")),
+            ("Volver", self.setup_menu)])
+
+    def need_tools(self):
+        st = updater.tools_status(paths.TOOLS)
+        return not (st["git"] and st["mingw"])
+
+    def setup_install(self, kind):
+        self.conf["setup_done"] = True
+        self.conf["anyps5_dir_asked"] = True
+        save_conf(self.conf)
+        if kind == "fork":
+            self.start_fork_entry()
+            self.kb["setup"] = True
+            return
+        tools = ["tools"] if kind == "repo" and self.need_tools() else []
+        self.use_channel(kind)
+        self.bg_update(tools + [kind])
 
     def apply_display(self):
         global W
@@ -318,6 +368,8 @@ class Console:
 
     def channel_name(self, ch=None):
         ch = ch or self.conf["channel"]
+        if ch == "tools":
+            return "Herramientas de compilación"
         if ch == "repo":
             return "Repositorio"
         if ch == "release":
@@ -919,7 +971,7 @@ class Console:
         return ch is None or ch == b.get("current") or ch in b["queue"]
 
     def bg_update(self, channels):
-        channels = [c for c in channels if c in self.channels()]
+        channels = [c for c in channels if c in self.channels() or c == "tools"]
         if not channels:
             return
         if self.bg:
@@ -976,6 +1028,10 @@ class Console:
             pass
 
     def update_channel(self, ch, log):
+        if ch == "tools":
+            updater.install_tools(paths.TOOLS, log)
+            paths.setup_environment()
+            return
         if ch == "release":
             check = updater.release_check(REL_DIR)
             updater.release_update(REL_DIR, check, log)
@@ -1248,6 +1304,13 @@ class Console:
         if channel and not self.channel_ready(channel, True):
             self.toast = (f"La versión {self.channel_name(channel)} no está instalada.", time.time() + 5)
             return
+        if not channel and not self.channel_ready(self.conf["channel"], True) and not self.bg_busy(self.conf["channel"]):
+            if not any(self.channel_ready(c) for c in self.channels()):
+                self.setup_menu()
+            else:
+                self.toast = (f"{self.tr(self.channel_name())} no está instalada. Elige otra en Ajustes > Versión de AnyPS5.",
+                              time.time() + 7)
+            return
         if self.bg_busy(channel or self.conf["channel"]):
             self.toast = (f"{self.tr(self.channel_name(channel))} se está actualizando; espera a que termine o elige otra versión.",
                           time.time() + 6)
@@ -1504,8 +1567,12 @@ class Console:
             else:
                 self.bg_update(["fork:" + fork["name"]])
             return
-        self.state = "updates"
-        self.bg_update(["fork:" + fork["name"]])
+        if self.kb.get("setup"):
+            self.use_channel("fork:" + fork["name"])
+            self.state = "home"
+        else:
+            self.state = "updates"
+        self.bg_update((["tools"] if self.need_tools() else []) + ["fork:" + fork["name"]])
 
     def handle(self, action):
         if self.menu:
