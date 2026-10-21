@@ -66,7 +66,7 @@ Every game session is reported to **[AnyPS5 Compatibility](https://techx3.github
 | In game | 2 to 10 minutes, or longer but it crashed |
 | Playable | 10 minutes or more in one session without crashing |
 
-A session that ends in a crash is never *Playable*; the page shows it as crashed with its exit code (for example `0xC0000005 (access violation)`). Closing the game yourself is not a crash. Missing AnyPS5 builds or tools on the PC are not reported as *Does not convert*.
+A session that ends in a crash is never *Playable*; the page shows it as crashed with its exit code (for example `0xC0000005 (access violation)`). Closing the game yourself is not a crash. Missing AnyPS5 builds or tools on the PC are not reported as *Does not convert*. A result reached only on a fork or on main with local changes is tagged **fork only**, with the best result on official AnyPS5 (stable or main) shown next to it, since it may depend on a fix that is only in that build.
 
 **What a report contains**
 
