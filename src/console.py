@@ -572,7 +572,8 @@ class Console:
         except procs.Cancelled:
             raise
         except Exception as e:
-            if not procs.cancel_event.is_set():
+            # Only a failure of AnyPS5 itself is a compatibility result, not a missing build or tools.
+            if not procs.cancel_event.is_set() and core.find_relinker(cfg):
                 self.report(game, channel, converted=False, error=str(e))
             raise
         result = None

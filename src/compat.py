@@ -178,12 +178,37 @@ def sanitizer(extra=()):
     return clean
 
 
-def status_of(converted, window_after, seconds, exit_code):
+ERROR_LINE = re.compile(r"error|exception|fatal|assert|unresolved|unimplemented|not implemented|crash|abort|"
+                        r"access violation|segfault|panic|failed|missing", re.I)
+LOG_SEPARATOR = "··· end of log ···"
+
+
+def log_excerpt(lines, errors=20, tail=38):
+    """Error lines from the whole log (deduplicated, last ones first kept) plus the end of the log."""
+    body = lines[:-tail] if len(lines) > tail else []
+    seen, found = set(), []
+    for ln in reversed(body):
+        key = re.sub(r"0x[0-9a-fA-F]+|\d+", "#", ln.strip())
+        if ln.strip() and ERROR_LINE.search(ln) and key not in seen:
+            seen.add(key)
+            found.append(ln)
+            if len(found) >= errors:
+                break
+    found.reverse()
+    out = found + ([LOG_SEPARATOR] if found else []) + lines[-tail:]
+    return out[-60:]
+
+
+def crashed(exit_code, closed_by_user):
+    return exit_code not in (0, None) and not closed_by_user
+
+
+def status_of(converted, window_after, seconds, exit_code, closed_by_user=False):
     if not converted:
         return "convert"
     if window_after is None:
         return "nothing"
-    if seconds >= PLAYABLE_SECONDS:
+    if seconds >= PLAYABLE_SECONDS and not crashed(exit_code, closed_by_user):
         return "playable"
     if seconds >= BOOT_SECONDS:
         return "ingame"
@@ -193,14 +218,15 @@ def status_of(converted, window_after, seconds, exit_code):
 def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, anyps5, console_version,
           audit_result, log_path, error="", private_words=()):
     clean = sanitizer(private_words)
-    tail = []
+    lines = []
     if log_path and Path(log_path).is_file():
         try:
-            tail = Path(log_path).read_text("utf-8", errors="replace").splitlines()[-60:]
+            lines = Path(log_path).read_text("utf-8", errors="replace").splitlines()
         except OSError:
             pass
     if error:
-        tail = tail[-40:] + error.splitlines()[-20:]
+        lines += error.splitlines()[-20:]
+    tail = log_excerpt(lines)
     missing = []
     stop = None
     if audit_result:
@@ -221,7 +247,8 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
         "title_id": game.title_id or game.key,
         "name": game.name,
         "game_version": version,
-        "status": status_of(converted, window_after, seconds, exit_code),
+        "status": status_of(converted, window_after, seconds, exit_code, closed_by_user),
+        "crashed": converted and crashed(exit_code, closed_by_user),
         "exit_code": exit_code,
         "seconds": int(seconds),
         "window_after": None if window_after is None else round(window_after, 1),
