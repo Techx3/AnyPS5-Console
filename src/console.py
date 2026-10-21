@@ -876,6 +876,8 @@ class Console:
             base = updater._git(root, "merge-base", "HEAD", "origin/main", check=False, timeout=20).stdout.strip()
             ahead = updater._git(root, "rev-list", "--count", "origin/main..HEAD", check=False, timeout=20).stdout.strip()
             if ahead and ahead != "0" and base:
+                if channel == "repo" and self.conf.get("local_is_main"):
+                    return base[:9]  # local commits that do not change emulation: report as main
                 return f"{base[:9]} + {ahead} local ({head})"
             return head
         except Exception:
