@@ -975,13 +975,13 @@ class Console:
         """APS5 variables the session ran with for this game (diagnostic traces left out)."""
         env = tweaks.effective_env(self.profile(game).get("env", {}), game.title_id or game.key)
         skip = {t["var"] for t in tweaks.TWEAKS if t["group"] == "Diagnóstico"}
-        return {k: v for k, v in env.items() if v != tweaks.OFF and k not in skip and not k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG"))}
+        return {k: v for k, v in env.items() if v != tweaks.OFF and k not in skip and not k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG", "APS5_PROFILE", "ANYPS5_OVERLAY"))}
 
     def diagnostic_session(self, game):
         """Traces, frame dumps or debug overrides were on: the session does not rate the game."""
         env = dict(os.environ)
         env.update(tweaks.effective_env(self.profile(game).get("env", {}), game.title_id or game.key))
-        return any(v not in ("", "0") and k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG", "ANYPS5_TRACE"))
+        return any(v not in ("", "0") and k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG", "ANYPS5_TRACE", "APS5_PROFILE"))
                    for k, v in env.items())
 
     def take_shot(self, game, minute, shots):

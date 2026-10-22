@@ -11,7 +11,7 @@ Release notes for AnyPS5 Console. The section of each version is the description
 - *View in the compatibility list* opens the game on the public page.
 
 **Compatibility settings**
-- *Game profile > Compatibility settings*: switch AnyPS5 options per game to work around a known problem (trails or uncleared images, depth, compression keys, frame order, PlayGo data) and diagnostic logs (audio, color compression, frame dumps). Only the options your AnyPS5 version has are listed, each with a short explanation.
+- *Game profile > Compatibility settings*: switch AnyPS5 options per game to work around a known problem (trails or uncleared images, depth, compression keys, frame order, PlayGo data) diagnostic logs (audio, color compression, frame dumps) and performance (overlay at start, GPU and driver time). Only the options your AnyPS5 version has are listed, each with a short explanation.
 - Settings recommended for a game (★) are applied automatically.
 - Compatibility reports include the settings the game ran with, and the list shows them. Sessions with diagnostic settings (logs, frame dumps) are marked and don't rate the game.
 - A failed conversion now reports the relinker's own error lines, not only "the relinker failed".
