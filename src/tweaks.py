@@ -53,7 +53,9 @@ TWEAKS = [
 
 # Title ID -> {variable: value} that a title is known to need with current AnyPS5.
 KNOWN = {
-    # Crash Bandicoot 4 (PPSA02433) needed APS5_KEYS_FILL_CLEAR=1 until AnyPS5 main of 2026-10-22 fixed the key-fill path.
+    # Crash Bandicoot 4: frames keep trails of earlier ones unless key fills clear at once (timing-dependent; also
+    # seen on AnyPS5 main of 2026-10-22).
+    "PPSA02433": {"APS5_KEYS_FILL_CLEAR": "1"},
 }
 
 OFF = ""  # profile value that switches a recommended toggle off
