@@ -66,6 +66,7 @@ T = [
     ("Volver", "Back", "返回", "वापस", "Retour", "رجوع"),
     ("Escribir", "Type", "输入", "लिखें", "Écrire", "كتابة"),
     ("Borrar", "Delete", "删除", "मिटाएँ", "Effacer", "حذف"),
+    ("Retroceso", "Backspace", "退格", "बैकस्पेस", "Retour arrière", "مسافة للخلف"),
     ("Espacio", "Space", "空格", "स्पेस", "Espace", "مسافة"),
     ("Listo", "Done", "完成", "हो गया", "Terminé", "تم"),
     ("Cancelar", "Cancel", "取消", "रद्द करें", "Annuler", "إلغاء"),

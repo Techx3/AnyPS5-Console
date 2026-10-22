@@ -149,6 +149,7 @@ class Console:
                                 if controller.is_controller(i)]
         except Exception:
             self.controllers = []
+        self.input_mode = "pad" if self.controllers else "keys"
         self.conf = load_conf()
         self.window = None
         self.apply_display()
@@ -2475,6 +2476,11 @@ class Console:
                    pygame.CONTROLLER_BUTTON_DPAD_LEFT: "left", pygame.CONTROLLER_BUTTON_DPAD_RIGHT: "right",
                    pygame.CONTROLLER_BUTTON_DPAD_UP: "up", pygame.CONTROLLER_BUTTON_DPAD_DOWN: "down"}
         for e in pygame.event.get():
+            if e.type in (pygame.KEYDOWN, pygame.TEXTINPUT):
+                self.input_mode = "keys"
+            elif e.type in (pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLERAXISMOTION) and (
+                    e.type == pygame.CONTROLLERBUTTONDOWN or abs(e.value) > 20000):
+                self.input_mode = "pad"
             if e.type == pygame.QUIT:
                 self.running = False
             elif e.type == pygame.VIDEORESIZE:
@@ -2723,12 +2729,33 @@ class Console:
                 pygame.draw.circle(self.screen, (c, c, c), (x + int(10 * math.cos(a)), 62 + int(10 * math.sin(a))), 3)
             self.text(label, 22, ACCENT, (x - 22, 62), anchor="midright", maxw=520)
 
+    # Keyboard keys shown instead of controller buttons once the keyboard is used (read_events maps the same actions)
+    KEY_HINTS = {"A": "Enter", "B": "Esc", "Y": "Tab", "X": "F5", "≡": "M", "↕": "↑↓"}
+    TYPING_KEY_HINTS = {"A": "A-Z", "X": "Retroceso", "≡": "Enter", "B": "Esc"}
+
     def draw_hints(self, hints):
         x = 70
+        keys = self.input_mode == "keys"
+        typing = self.state == "newuser" and not self.menu
         for btn, label in hints:
-            pygame.draw.circle(self.screen, TEXT, (x + 20, H - 55), 20)
-            self.text(btn, 24, (10, 14, 20), (x + 20, H - 55), bold=True, anchor="center")
-            r = self.text(label, 26, TEXT, (x + 50, H - 55), anchor="midleft")
+            key = None
+            if keys:
+                key = self.TYPING_KEY_HINTS.get(btn) if typing else None
+                if typing and btn == "Y":
+                    key = "Ctrl+V" if label == "Pegar" else "Espacio"
+                key = key or self.KEY_HINTS.get(btn)
+            if key:
+                f = self.font(22, True)
+                w = max(40, f.size(self.tr(key))[0] + 22)
+                cap = pygame.Rect(x, H - 75, w, 40)
+                pygame.draw.rect(self.screen, TEXT, cap, border_radius=8)
+                pygame.draw.rect(self.screen, DIM, cap, 2, border_radius=8)
+                self.text(key, 22, (10, 14, 20), cap.center, bold=True, anchor="center")
+                r = self.text(label, 26, TEXT, (cap.right + 12, H - 55), anchor="midleft")
+            else:
+                pygame.draw.circle(self.screen, TEXT, (x + 20, H - 55), 20)
+                self.text(btn, 24, (10, 14, 20), (x + 20, H - 55), bold=True, anchor="center")
+                r = self.text(label, 26, TEXT, (x + 50, H - 55), anchor="midleft")
             x = r.right + 50
 
     def badge(self, label, pos, size=20):
