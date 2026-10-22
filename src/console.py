@@ -955,6 +955,8 @@ class Console:
                log_path=None, error="", shots=()):
         if not self.conf.get("compat") or not compat.valid_title_id(game.title_id):
             return  # only games with a title ID (sce_sys/param.json) go to the list
+        if converted and window_after is None and getattr(self, "closed_by_user", False):
+            return  # closed by the player before the game showed a window: says nothing about the game
         try:
             ch = channel or self.conf["channel"]
             words = [self.user["name"]] if self.user else []

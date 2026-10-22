@@ -73,6 +73,17 @@ class Store:
         s[title] = digest
         self._save("sent.json", s)
 
+    def best(self):
+        return self._json("best.json", {})
+
+    def mark_best(self, report):
+        key = version_key(report)
+        b = self.best()
+        cur = b.setdefault(report["title_id"], {}).get(key)
+        if cur is None or RANK.index(report["status"]) > RANK.index(cur):
+            b[report["title_id"]][key] = report["status"]
+            self._save("best.json", b)
+
     def queue(self, report):
         (self.pending / f"{int(time.time() * 1000)}.json").write_text(json.dumps(report), "utf-8")
 
@@ -277,6 +288,24 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
     }
 
 
+RANK = ["convert", "nothing", "boots", "ingame", "playable"]
+
+
+def version_key(report):
+    a = report.get("anyps5") or {}
+    return json.dumps([a.get("channel"), a.get("version"), report.get("game_version"), report.get("settings") or {}],
+                      sort_keys=True)
+
+
+def adds_nothing(report, best):
+    """A clean session (no crash) shorter than a result already reported for the same AnyPS5 version, game version
+    and settings: the player just played less, so the report would only repeat what the list knows."""
+    if report.get("crashed") or report.get("status") not in ("boots", "ingame"):
+        return False
+    known = (best.get(report["title_id"]) or {}).get(version_key(report))
+    return known is not None and RANK.index(known) > RANK.index(report["status"])
+
+
 def digest(report):
     key = {k: report.get(k) for k in ("status", "anyps5", "game_version", "absent", "stub", "missing_libs", "stop", "settings", "diagnostic")}
     key["exit"] = report.get("exit_code") if report.get("status") != "playable" else 0
@@ -411,7 +440,7 @@ def _flush(store, log, conf):
             f.unlink(missing_ok=True)
             continue
         d = digest(report)
-        if store.sent().get(report["title_id"]) == d:
+        if store.sent().get(report["title_id"]) == d or adds_nothing(report, store.best()):
             _drop_shots(report)
             f.unlink(missing_ok=True)
             continue
@@ -432,6 +461,8 @@ def _flush(store, log, conf):
             log(f"Reporte no enviado: {e}")
             break
         store.mark_sent(report["title_id"], d)
+        if not report.get("diagnostic"):
+            store.mark_best(report)
         _drop_shots({"shots_local": local})
         f.unlink(missing_ok=True)
         sent += 1

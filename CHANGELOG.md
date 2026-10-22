@@ -14,6 +14,7 @@ Release notes for AnyPS5 Console. The section of each version is the description
 - *Game profile > Compatibility settings*: switch AnyPS5 options per game to work around a known problem (trails or uncleared images, depth, compression keys, frame order, PlayGo data) diagnostic logs (audio, color compression, frame dumps) and performance (overlay at start, GPU and driver time). Only the options your AnyPS5 version has are listed, each with a short explanation.
 - Settings recommended for a game (★) are applied automatically. Crash Bandicoot 4 renders correctly with them (`APS5_KEYS_FILL_CLEAR=1`).
 - Compatibility reports include the settings the game ran with, and the list shows them. Sessions with diagnostic settings (logs, frame dumps) are marked and don't rate the game.
+- Fewer repeated reports: a session that ends normally and is shorter than a result already reported for the same AnyPS5 version, game version and settings is not sent (crashes always are), and closing a game before its window appears sends nothing.
 - A failed conversion now reports the relinker's own error lines, not only "the relinker failed".
 - Games without a title ID (a folder with no `sce_sys/param.json`, such as `app0` or `source`) are no longer reported; the title ID is also read from the parent folder of an `app0` dump.
 
