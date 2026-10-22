@@ -215,8 +215,15 @@ def status_of(converted, window_after, seconds, exit_code, closed_by_user=False)
     return "boots"
 
 
+TITLE_ID = re.compile(r"^[A-Z]{4}\d{5}$")
+
+
+def valid_title_id(tid):
+    return bool(TITLE_ID.match(str(tid or "")))
+
+
 def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, anyps5, console_version,
-          audit_result, log_path, error="", private_words=(), shots=(), settings=None):
+          audit_result, log_path, error="", private_words=(), shots=(), settings=None, diagnostic=False):
     clean = sanitizer(private_words)
     lines = []
     if log_path and Path(log_path).is_file():
@@ -225,7 +232,7 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
         except OSError:
             pass
     if error:
-        lines += error.splitlines()[-20:]
+        lines += error.splitlines()[-120:]
     tail = log_excerpt(lines)
     missing = []
     stop = None
@@ -255,6 +262,7 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
         "closed_by_user": bool(closed_by_user),
         "anyps5": anyps5,
         "settings": dict(sorted((settings or {}).items())),
+        "diagnostic": bool(diagnostic),
         "console": console_version,
         "os": os_name(),
         "gpu": gpu_name(),
@@ -270,7 +278,7 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
 
 
 def digest(report):
-    key = {k: report.get(k) for k in ("status", "anyps5", "game_version", "absent", "stub", "missing_libs", "stop", "settings")}
+    key = {k: report.get(k) for k in ("status", "anyps5", "game_version", "absent", "stub", "missing_libs", "stop", "settings", "diagnostic")}
     key["exit"] = report.get("exit_code") if report.get("status") != "playable" else 0
     if report.get("shots_local"):
         key["shots"] = sorted(x["minute"] for x in report["shots_local"])

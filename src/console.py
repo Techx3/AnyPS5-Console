@@ -821,7 +821,7 @@ class Console:
             # Only a failure of AnyPS5 itself is a compatibility result, not a missing build or tools.
             if not procs.cancel_event.is_set() and core.find_relinker(cfg):
                 self.set_game_status(game, channel, "convert")
-                self.report(game, channel, converted=False, error=str(e))
+                self.report(game, channel, converted=False, error="\n".join(getattr(e, "output", []) + [str(e)]))
             raise
         result = None
         if not skip_audit:
@@ -953,8 +953,8 @@ class Console:
 
     def report(self, game, channel, *, converted, window_after=None, seconds=0, exit_code=None, audit_result=None,
                log_path=None, error="", shots=()):
-        if not self.conf.get("compat"):
-            return
+        if not self.conf.get("compat") or not compat.valid_title_id(game.title_id):
+            return  # only games with a title ID (sce_sys/param.json) go to the list
         try:
             ch = channel or self.conf["channel"]
             words = [self.user["name"]] if self.user else []
@@ -964,7 +964,8 @@ class Console:
                              anyps5={"channel": ch if not ch.startswith("fork:") else "fork " + ch[5:],
                                      "version": self.anyps5_version(ch)},
                              console_version=paths.VERSION, audit_result=audit_result, log_path=log_path,
-                             error=error, private_words=words, shots=shots, settings=self.report_settings(game))
+                             error=error, private_words=words, shots=shots, settings=self.report_settings(game),
+                             diagnostic=self.diagnostic_session(game))
             self.compat_store.queue(r)
             threading.Thread(target=self.flush_reports, daemon=True).start()
         except Exception as e:
@@ -975,6 +976,13 @@ class Console:
         env = tweaks.effective_env(self.profile(game).get("env", {}), game.title_id or game.key)
         skip = {t["var"] for t in tweaks.TWEAKS if t["group"] == "Diagnóstico"}
         return {k: v for k, v in env.items() if v != tweaks.OFF and k not in skip and not k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG"))}
+
+    def diagnostic_session(self, game):
+        """Traces, frame dumps or debug overrides were on: the session does not rate the game."""
+        env = dict(os.environ)
+        env.update(tweaks.effective_env(self.profile(game).get("env", {}), game.title_id or game.key))
+        return any(v not in ("", "0") and k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG", "ANYPS5_TRACE"))
+                   for k, v in env.items())
 
     def take_shot(self, game, minute, shots):
         if not self.conf.get("compat") or not compat.relay_url(self.conf) or not self.game_exe:

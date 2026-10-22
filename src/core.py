@@ -82,9 +82,14 @@ class Game:
 
 
 def read_param(game_dir):
-    try:
-        data = json.loads((game_dir / "sce_sys" / "param.json").read_text("utf-8", errors="replace"))
-    except (OSError, ValueError):
+    data = None
+    for d in (game_dir, game_dir.parent):  # an app0 folder keeps sce_sys one level up in some dumps
+        try:
+            data = json.loads((d / "sce_sys" / "param.json").read_text("utf-8", errors="replace"))
+            break
+        except (OSError, ValueError):
+            continue
+    if not isinstance(data, dict):
         return "", ""
     tid = str(data.get("titleId") or data.get("title_id") or "")
     lp = data.get("localizedParameters")
@@ -356,6 +361,14 @@ def sync_libs(out, cfg, log):
                     shutil.copy2(hit, target / name)
 
 
+class ConvertError(RuntimeError):
+    """A failed conversion, with the last lines the relinker printed."""
+
+    def __init__(self, message, output=()):
+        super().__init__(message)
+        self.output = list(output)
+
+
 def ensure_converted(game, cfg, log, force=False):
     rel = find_relinker(cfg)
     if not rel:
@@ -377,9 +390,15 @@ def ensure_converted(game, cfg, log, force=False):
         extra += ["--module-dir", d.as_posix()]
         log(f"Modulos adicionales: {d.as_posix()}")
     cmd = [rel] + (["--windows"] if IS_WIN else []) + extra + shlex.split(cfg.get("extra_args", "")) + [elf, exe]
-    rc = run_cmd(cmd, out, log)
+    tail = []
+
+    def tee(line):
+        tail.append(line)
+        del tail[:-120]
+        log(line)
+    rc = run_cmd(cmd, out, tee)
     if rc != 0 or not exe.exists():
-        raise RuntimeError(f"El relinker fallo (codigo {rc}). Revisa el registro.")
+        raise ConvertError(f"El relinker fallo (codigo {rc}). Revisa el registro.", tail)
     app0 = out / "app0"
     app0.mkdir(exist_ok=True)
     link_tree(game.path, app0, MODULE_DIRS, log)
