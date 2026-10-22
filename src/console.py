@@ -19,6 +19,7 @@ import users as userlib  # noqa: E402
 import synth  # noqa: E402
 import pcgames  # noqa: E402
 import audit  # noqa: E402
+import tweaks  # noqa: E402
 import winfs  # noqa: E402
 import i18n  # noqa: E402
 import procs  # noqa: E402
@@ -849,8 +850,13 @@ class Console:
         else:
             os.environ.pop("ANYPS5_FULLSCREEN", None)
             os.environ.pop("APS5_FULLSCREEN", None)
-        saved_env = {k: os.environ.get(k) for k in prof.get("env", {})}
-        os.environ.update(prof.get("env", {}))
+        game_env = tweaks.effective_env(prof.get("env", {}), game.title_id or game.key)
+        saved_env = {k: os.environ.get(k) for k in game_env}
+        for k, v in game_env.items():
+            if v == tweaks.OFF:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         self.q.put(("launch",))
         if os.environ.get("ANYPS5_FULLSCREEN", "0") not in ("", "0") or os.environ.get("APS5_FULLSCREEN", "0") not in ("", "0"):
             threading.Thread(target=winfs.fullscreen_when_ready, args=(str(exe.resolve()), getattr(self, "hwnd", None)),
@@ -958,11 +964,17 @@ class Console:
                              anyps5={"channel": ch if not ch.startswith("fork:") else "fork " + ch[5:],
                                      "version": self.anyps5_version(ch)},
                              console_version=paths.VERSION, audit_result=audit_result, log_path=log_path,
-                             error=error, private_words=words, shots=shots)
+                             error=error, private_words=words, shots=shots, settings=self.report_settings(game))
             self.compat_store.queue(r)
             threading.Thread(target=self.flush_reports, daemon=True).start()
         except Exception as e:
             self.log(f"Reporte de compatibilidad: {e}")
+
+    def report_settings(self, game):
+        """APS5 variables the session ran with for this game (diagnostic traces left out)."""
+        env = tweaks.effective_env(self.profile(game).get("env", {}), game.title_id or game.key)
+        skip = {t["var"] for t in tweaks.TWEAKS if t["group"] == "Diagnóstico"}
+        return {k: v for k, v in env.items() if v != tweaks.OFF and k not in skip and not k.startswith(("APS5_TRACE", "APS5_DUMP", "APS5_DEBUG"))}
 
     def take_shot(self, game, minute, shots):
         if not self.conf.get("compat") or not compat.relay_url(self.conf) or not self.game_exe:
@@ -1490,6 +1502,7 @@ class Console:
         items = [
             (f"Versión de AnyPS5: {self.tr(self.channel_name(ch)) if ch else self.tr('la general')}",
              lambda: self.profile_channel_menu(g)),
+            (f"Ajustes de compatibilidad: {self.active_tweaks(g)}", lambda: self.tweaks_menu(g)),
             (f"Variables APS5: {len(env)}", lambda: self.profile_env_menu(g)),
             (f"Argumentos extra: {p.get('args') or self.tr('ninguno')}", lambda: self.text_entry(
                 self.tr("Argumentos extra del relinker"), p.get("args", ""), lambda t: self.set_profile_args(g, t),
@@ -1499,6 +1512,37 @@ class Console:
             items.append(("Restablecer perfil", lambda: self.reset_profile(g)))
         items.append(("Cerrar", None))
         self.open_menu(f"{self.tr('Perfil')}: {g.name}", items)
+
+    def active_tweaks(self, g):
+        env = self.profile(g).get("env", {})
+        tid = g.title_id or g.key
+        return sum(1 for t in tweaks.TWEAKS if tweaks.state(t, env, tid)[0] != tweaks.OFF)
+
+    def tweaks_menu(self, g, index=0):
+        env = self.profile(g).get("env", {})
+        tid = g.title_id or g.key
+        items, desc = [], []
+        for t in tweaks.available(self.channel_root(self.profile(g).get("channel"))):
+            value, rec = tweaks.state(t, env, tid)
+            shown = self.tr("Sí") if value == "1" and t["values"] == ["1"] else (value or self.tr("No"))
+            label = f"{self.tr(t['group'])} · {self.tr(t['label'])}: {shown}"
+            if rec is not None:
+                label += "  ★"
+            items.append((label, lambda t=t, i=len(items): self.toggle_tweak(g, t, i)))
+            desc.append(self.tr(t["help"]) + ("  " + self.tr("★ Recomendado para este juego.") if rec is not None else ""))
+        items.append(("Volver", lambda: self.profile_menu(g)))
+        desc.append(self.tr("Se aplican la próxima vez que juegues este juego."))
+        self.open_menu(f"{self.tr('Ajustes de compatibilidad')}: {g.name}", items)
+        self.menu["desc"] = desc
+        self.menu["i"] = min(index, len(items) - 1)
+
+    def toggle_tweak(self, g, tweak, index):
+        p = self.profile(g, True)
+        p["env"] = tweaks.cycle(tweak, p.get("env", {}), g.title_id or g.key)
+        if not p["env"]:
+            p.pop("env")
+        self.save_profile(g)
+        self.tweaks_menu(g, index)
 
     def profile_channel_menu(self, g):
         items = [("La general", lambda: self.set_profile_channel(g, None))]
@@ -3252,7 +3296,7 @@ class Console:
         box = pygame.Rect(W - bw, 0, bw, H)
         pygame.draw.rect(self.screen, (18, 24, 34), box)
         self.text(m["title"], 40, TEXT, (box.x + 50, 120), bold=True, maxw=bw - 100)
-        visible = max(1, (H - 260) // 84)
+        visible = max(1, (H - 260 - (140 if m.get("desc") else 0)) // 84)
         first = min(max(0, m["i"] - visible + 1), max(0, len(m["items"]) - visible))
         first = min(first, m["i"])
         y = 220
@@ -3264,6 +3308,21 @@ class Console:
             y += 84
         if len(m["items"]) > visible:
             self.text(f"{m['i'] + 1} / {len(m['items'])}", 22, DIM, (box.right - 40, H - 40), anchor="bottomright")
+        desc = m.get("desc")
+        if desc and m["i"] < len(desc) and desc[m["i"]]:
+            words, lines, line = self.tr(desc[m["i"]]).split(), [], ""
+            for word in words:
+                trial = (line + " " + word).strip()
+                if line and self.render_str(trial, 24, DIM).get_width() > bw - 100:
+                    lines.append(line)
+                    line = word
+                else:
+                    line = trial
+            lines.append(line)
+            top = H - 70 - 32 * len(lines[:3])
+            pygame.draw.line(self.screen, (40, 50, 66), (box.x + 40, top - 14), (box.right - 40, top - 14), 2)
+            for k, ln in enumerate(lines[:3]):
+                self.text(ln, 24, DIM, (box.x + 50, top + 32 * k))
 
     def draw_toast(self):
         if not self.toast or time.time() > self.toast[1]:

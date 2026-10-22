@@ -94,6 +94,7 @@ Paths and user names are removed from the log before sending.
 *Options* (Y) on a game:
 
 - **Game profile**: AnyPS5 version used for that game, `ANYPS5_*` / `APS5_*` environment variables (for example `ANYPS5_FULLSCREEN=0`) and extra relinker arguments. Only that game is affected; changing the arguments reconverts it next time.
+- **Compatibility settings** (in the game profile): AnyPS5 options to try when a game shows a known problem, one switch each with a short explanation. Graphics: clear surfaces at once (trails or images that are not cleared), read depth as stored, compression keys on the CPU, exact draw writes, strict texture tables, present frames in order. Stability: draw without a queue. System: missing PlayGo data. Diagnostics: audio, decoder and color-compression logs, frame dumps. Only the options your AnyPS5 version has are listed. Settings known to help a game are marked ★ and applied automatically; switch them off there if needed. The settings a game ran with are sent with its compatibility report.
 - **Trophies**: the trophies AnyPS5 records for the current user, with icons, grade and unlock date (from the game's `sce_sys/trophy2` package).
 - **View in the compatibility list**, **PRs that would help it**, **System functions**.
 

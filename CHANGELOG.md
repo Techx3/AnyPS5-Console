@@ -10,6 +10,11 @@ Release notes for AnyPS5 Console. The section of each version is the description
 - Trophies: list of the game's trophies with icons, grade and unlock date, per user. Trophy count on the home screen.
 - *View in the compatibility list* opens the game on the public page.
 
+**Compatibility settings**
+- *Game profile > Compatibility settings*: switch AnyPS5 options per game to work around a known problem (trails or uncleared images, depth, compression keys, frame order, PlayGo data) and diagnostic logs (audio, color compression, frame dumps). Only the options your AnyPS5 version has are listed, each with a short explanation.
+- Settings recommended for a game (★) are applied automatically. Crash Bandicoot 4 now renders correctly out of the box (`APS5_KEYS_FILL_CLEAR=1`).
+- Compatibility reports include the settings the game ran with, and the list shows them.
+
 **AnyPS5 pull requests**
 - The console tells you when an open AnyPS5 PR implements functions your games are missing (*Menu > PRs for your games* and on each game). The compatibility page links those PRs in *Most needed functions*.
 

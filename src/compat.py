@@ -216,7 +216,7 @@ def status_of(converted, window_after, seconds, exit_code, closed_by_user=False)
 
 
 def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, anyps5, console_version,
-          audit_result, log_path, error="", private_words=(), shots=()):
+          audit_result, log_path, error="", private_words=(), shots=(), settings=None):
     clean = sanitizer(private_words)
     lines = []
     if log_path and Path(log_path).is_file():
@@ -254,6 +254,7 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
         "window_after": None if window_after is None else round(window_after, 1),
         "closed_by_user": bool(closed_by_user),
         "anyps5": anyps5,
+        "settings": dict(sorted((settings or {}).items())),
         "console": console_version,
         "os": os_name(),
         "gpu": gpu_name(),
@@ -269,7 +270,7 @@ def build(game, *, converted, window_after, seconds, exit_code, closed_by_user, 
 
 
 def digest(report):
-    key = {k: report.get(k) for k in ("status", "anyps5", "game_version", "absent", "stub", "missing_libs", "stop")}
+    key = {k: report.get(k) for k in ("status", "anyps5", "game_version", "absent", "stub", "missing_libs", "stop", "settings")}
     key["exit"] = report.get("exit_code") if report.get("status") != "playable" else 0
     if report.get("shots_local"):
         key["shots"] = sorted(x["minute"] for x in report["shots_local"])
@@ -293,6 +294,8 @@ def body_of(report):
     if report.get("stop"):
         s = report["stop"]
         lines.append(f"**Stops at:** `{s['lib']}` {s['name'] or s['nid']}")
+    if report.get("settings"):
+        lines.append("**Settings:** " + ", ".join(f"`{k}={v}`" for k, v in report["settings"].items()))
     if report.get("shots"):
         lines += ["", " ".join(f'<img src="{SHOTS_RAW}{x["path"]}" width="320" alt="{x["minute"]} min">'
                                for x in report["shots"])]
