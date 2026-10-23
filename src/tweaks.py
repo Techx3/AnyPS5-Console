@@ -1,5 +1,6 @@
 """Compatibility toggles: AnyPS5 environment variables a player can switch per game when a title shows a known
 problem, with the values recommended for titles where one is known to help."""
+import os
 from pathlib import Path
 
 # values: the settings the toggle cycles through after "off"; group orders the menu.
@@ -37,6 +38,13 @@ TWEAKS = [
     {"var": "APS5_PROFILE_DRAW", "values": ["1"], "group": "Rendimiento",
      "label": "Medir el tiempo del driver",
      "help": "Agrega la línea DRIVER al panel y escribe los tiempos de dibujo en el log."},
+    {"var": "APS5_PIPELINE_JOURNAL_THREADS", "values": [str(os.cpu_count() or 8)], "group": "Shaders",
+     "label": "Precompilar shaders con todos los núcleos",
+     "help": "AnyPS5 ya precompila al iniciar los shaders de sesiones anteriores con la mitad de los núcleos. "
+             "Esto usa todos: carga más rápida y menos tirones, más CPU al iniciar."},
+    {"var": "APS5_PIPELINE_JOURNAL_ENTRIES", "values": ["4096"], "group": "Shaders",
+     "label": "Precompilar más shaders",
+     "help": "Recuerda hasta 4096 pipelines en vez de 1024, para juegos grandes que siguen con tirones tras varias sesiones."},
     {"var": "APS5_TRACE_AUDIOOUT2", "values": ["1"], "group": "Diagnóstico",
      "label": "Registrar la salida de audio",
      "help": "Anota en el log los canales de audio del juego. El log crece rápido."},
