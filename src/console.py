@@ -1534,7 +1534,7 @@ class Console:
         items, desc = [], []
         for t in tweaks.available(self.channel_root(self.profile(g).get("channel"))):
             value, rec = tweaks.state(t, env, tid)
-            shown = self.tr("Sí") if value == "1" and t["values"] == ["1"] else (value or self.tr("No"))
+            shown = self.tr("Sí") if len(t["values"]) == 1 and value == t["values"][0] else (value or self.tr("No"))
             label = f"{self.tr(t['group'])} · {self.tr(t['label'])}: {shown}"
             if rec is not None:
                 label += "  ★"
